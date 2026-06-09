@@ -1,0 +1,180 @@
+"""Persistence layer over SQLAlchemy.
+
+Works on SQLite (dev/tests) and PostgreSQL (production). The one
+production-critical primitive here is :meth:`SqlStore.locked_run`, which serialises
+all ticks for a given run so the engine never advances the same run twice
+concurrently. On PostgreSQL it uses a transaction-scoped advisory lock; on SQLite
+it falls back to an in-process lock (single-process dev/test only).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
+from sqlalchemy import Engine as SaEngine
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session, sessionmaker
+
+from .models import Base, WorkflowRun, WorkflowStep, utcnow
+
+
+def _advisory_key(run_id: str) -> int:
+    digest = hashlib.blake2b(run_id.encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+class SqlStore:
+    def __init__(self, url: str = "sqlite://", *, engine: SaEngine | None = None) -> None:
+        self.engine: SaEngine = engine or create_engine(url, future=True)
+        self.is_postgres = self.engine.dialect.name == "postgresql"
+        self.Session = sessionmaker(self.engine, expire_on_commit=False, future=True)
+        self._local_locks: dict[str, threading.Lock] = {}
+        self._local_guard = threading.Lock()
+
+    def create_all(self) -> None:
+        Base.metadata.create_all(self.engine)
+
+    # ------------------------------------------------------------------ runs
+    def create_run(
+        self,
+        *,
+        run_id: str,
+        name: str,
+        version: int,
+        input: dict,
+        idempotency_key: str | None = None,
+    ) -> str:
+        with self.Session.begin() as session:
+            session.add(
+                WorkflowRun(
+                    id=run_id,
+                    name=name,
+                    version=version,
+                    input=input,
+                    status="PENDING",
+                    idempotency_key=idempotency_key,
+                )
+            )
+        return run_id
+
+    def get_run(self, run_id: str, *, session: Session | None = None) -> WorkflowRun | None:
+        if session is not None:
+            return session.get(WorkflowRun, run_id)
+        with self.Session() as s:
+            return s.get(WorkflowRun, run_id)
+
+    def find_by_idempotency_key(self, key: str) -> WorkflowRun | None:
+        with self.Session() as s:
+            return s.scalar(select(WorkflowRun).where(WorkflowRun.idempotency_key == key))
+
+    def update_run(self, run_id: str, *, session: Session | None = None, **fields: Any) -> None:
+        def _apply(s: Session) -> None:
+            run = s.get(WorkflowRun, run_id)
+            if run is None:
+                return
+            for key, value in fields.items():
+                setattr(run, key, value)
+            run.updated_at = utcnow()
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    # ----------------------------------------------------------------- steps
+    def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:
+        def _query(s: Session) -> list[WorkflowStep]:
+            return list(
+                s.scalars(
+                    select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)
+                )
+            )
+
+        if session is not None:
+            return _query(session)
+        with self.Session() as s:
+            return _query(s)
+
+    def create_step(
+        self,
+        run_id: str,
+        seq: int,
+        *,
+        kind: str,
+        name: str,
+        input: dict | None,
+        status: str = "SCHEDULED",
+        session: Session | None = None,
+    ) -> None:
+        def _apply(s: Session) -> None:
+            if s.get(WorkflowStep, (run_id, seq)) is not None:
+                return  # idempotent: this command was already scheduled on a prior tick
+            s.add(WorkflowStep(run_id=run_id, seq=seq, kind=kind, name=name, input=input, status=status))
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def complete_step(
+        self,
+        run_id: str,
+        seq: int,
+        *,
+        status: str,
+        result: Any = None,
+        error: Any = None,
+    ) -> None:
+        with self.Session.begin() as s:
+            step = s.get(WorkflowStep, (run_id, seq))
+            if step is None:
+                return
+            step.status = status
+            step.result = result
+            step.error = error
+            step.completed_at = utcnow()
+
+    # ------------------------------------------------------------------ lock
+    @contextmanager
+    def locked_run(self, run_id: str) -> Iterator[Session]:
+        """Hold an exclusive lock on ``run_id`` for the duration of one tick.
+
+        Yields a session whose transaction is committed on clean exit and rolled
+        back on error.
+        """
+        if self.is_postgres:
+            with self.Session() as session:
+                session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _advisory_key(run_id)})
+                try:
+                    yield session
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+        else:
+            lock = self._get_local_lock(run_id)
+            lock.acquire()
+            try:
+                with self.Session() as session:
+                    try:
+                        yield session
+                        session.commit()
+                    except Exception:
+                        session.rollback()
+                        raise
+            finally:
+                lock.release()
+
+    def _get_local_lock(self, run_id: str) -> threading.Lock:
+        with self._local_guard:
+            lock = self._local_locks.get(run_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._local_locks[run_id] = lock
+            return lock
