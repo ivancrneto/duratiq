@@ -10,7 +10,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dramatiq = ["dramatiq>=1.16"]
+redis = ["dramatiq>=1.16", "redis>=5"]
 postgres = ["psycopg[binary]>=3.1"]
+# Everything the runnable examples/ need (postgres_dramatiq.py: Postgres + Redis broker).
+examples = ["dramatiq>=1.16", "redis>=5", "psycopg[binary]>=3.1"]
 dev = ["pytest>=8", "dramatiq>=1.16"]
 
 [build-system]
