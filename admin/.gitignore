@@ -1,0 +1,8 @@
+# Local/seeded SQLite databases (demo data, not source)
+*.db
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Local env files (commit only .env.example)
+.env
