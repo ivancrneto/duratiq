@@ -9,7 +9,8 @@ rather than user management.
   `workflow_steps`. Reuses the `duratiq` package's models + `SqlStore`. Read
   endpoints plus two actions — **cancel** (store-only) and **retry** (resets a
   failed run + enqueues a tick via a broker). Gated by a single `ADMIN_TOKEN`.
-- **`frontend/`** — React + TypeScript + Vite + Chakra UI. A runs list (filter by
+- **`frontend/`** — React + TypeScript + Vite + shadcn/ui (Tailwind), matching
+  izap-studio's stack. A runs list (filter by
   status / name, paginate, status counts) and a run-detail page with the full
   step timeline, input/result/error payloads, and Cancel / Retry buttons.
 
