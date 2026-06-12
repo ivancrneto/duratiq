@@ -109,3 +109,37 @@ class Engine:
                 error={"type": type(error).__name__, "message": str(error)},
             )
         self.driver.request_tick(run_id)
+
+    # -------------------------------------------------------------- control
+    def cancel(self, run_id: str) -> bool:
+        """Mark a non-terminal run ``CANCELLED``.
+
+        Returns ``False`` if the run is missing or already terminal. No driver or
+        registry needed — ``tick`` already short-circuits on a cancelled run.
+        """
+        with self.store.locked_run(run_id) as session:
+            run = self.store.get_run(run_id, session=session)
+            if run is None or run.status in _TERMINAL:
+                return False
+            self.store.update_run(run_id, session=session, status="CANCELLED")
+        return True
+
+    def retry(self, run_id: str) -> bool:
+        """Re-arm a ``FAILED`` run and request a fresh tick.
+
+        Drops the failed step(s) so they reschedule on the next replay, resets the
+        run to ``PENDING``, and clears the recorded error. Returns ``False`` if the
+        run is missing or not ``FAILED``. Requires a driver to actually resume.
+        """
+        with self.store.locked_run(run_id) as session:
+            run = self.store.get_run(run_id, session=session)
+            if run is None or run.status != "FAILED":
+                return False
+            for step in self.store.get_steps(run_id, session=session):
+                if step.status == "FAILED":
+                    session.delete(step)
+            self.store.update_run(run_id, session=session, status="PENDING", error=None)
+        # Request the tick only after the reset has committed.
+        if self.driver is not None:
+            self.driver.request_tick(run_id)
+        return True
