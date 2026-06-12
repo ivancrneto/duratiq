@@ -5,12 +5,13 @@ A read-only web admin for duratiq workflow runs — modeled on the structure of
 but on **SQLAlchemy** (reusing duratiq's own models) and scoped to viewing runs
 rather than user management.
 
-- **`backend/`** — FastAPI + SQLAlchemy read API over `workflow_runs` /
-  `workflow_steps`. Reuses the `duratiq` package's models + `SqlStore`; never
-  mutates engine state. Gated by a single `ADMIN_TOKEN`.
+- **`backend/`** — FastAPI + SQLAlchemy API over `workflow_runs` /
+  `workflow_steps`. Reuses the `duratiq` package's models + `SqlStore`. Read
+  endpoints plus two actions — **cancel** (store-only) and **retry** (resets a
+  failed run + enqueues a tick via a broker). Gated by a single `ADMIN_TOKEN`.
 - **`frontend/`** — React + TypeScript + Vite + Chakra UI. A runs list (filter by
   status / name, paginate, status counts) and a run-detail page with the full
-  step timeline and input/result/error payloads.
+  step timeline, input/result/error payloads, and Cancel / Retry buttons.
 
 ## Run it locally (two terminals)
 
@@ -53,8 +54,15 @@ database the duratiq engine already populates (see `docker-compose.yml`).
 | View        | Contents                                                            |
 |-------------|---------------------------------------------------------------------|
 | Runs list   | Status counts, filterable/paginated table of runs.                  |
-| Run detail  | Run metadata, input/result/error, and the ordered step history.     |
+| Run detail  | Run metadata, input/result/error, the step history, and actions.    |
 
-This is the read half of the "SQLAdmin run/history viewer" called out as a next
-step in the duratiq plan. Cancel/retry actions were intentionally left out (the
-viewer never mutates engine state); they'd be the natural follow-up.
+### Actions
+
+- **Cancel** (non-terminal runs) — writes `status=CANCELLED`; the engine's
+  `tick()` already honours it. No broker needed.
+- **Retry** (FAILED runs) — resets the run to `PENDING`, drops the failed step,
+  and enqueues a `duratiq_tick` so a running worker resumes it. Requires
+  `DURATIQ_BROKER_URL` (see `backend/README.md`); without it, retry returns 503.
+
+The underlying `Engine.cancel()` / `Engine.retry()` also live in duratiq core, so
+they're usable programmatically without the admin.
