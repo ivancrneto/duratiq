@@ -51,3 +51,9 @@ class StepOut(BaseModel):
 class StatsOut(BaseModel):
     total: int
     by_status: dict[str, int]
+
+
+class ActionResult(BaseModel):
+    id: str
+    status: str
+    enqueued: bool = False

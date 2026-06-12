@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from .. import repository
-from ..deps import get_session, require_token
-from ..schemas import RunListOut, RunOut, StatsOut, StepOut
+from duratiq import SqlStore
+
+from .. import actions, repository
+from ..db import get_store
+from ..deps import get_enqueue, get_session, require_token
+from ..schemas import ActionResult, RunListOut, RunOut, StatsOut, StepOut
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -50,3 +55,30 @@ def get_steps(run_id: str, session: Session = Depends(get_session)) -> list[Step
     if repository.get_run(session, run_id) is None:
         raise HTTPException(status_code=404, detail="run not found")
     return [StepOut.model_validate(s) for s in repository.list_steps(session, run_id)]
+
+
+@router.post("/runs/{run_id}/cancel", response_model=ActionResult)
+def cancel_run(run_id: str, store: SqlStore = Depends(get_store)) -> ActionResult:
+    try:
+        status = actions.cancel_run(store, run_id)
+    except actions.RunNotFound:
+        raise HTTPException(status_code=404, detail="run not found") from None
+    except actions.NotActionable as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from None
+    return ActionResult(id=run_id, status=status)
+
+
+@router.post("/runs/{run_id}/retry", response_model=ActionResult)
+def retry_run(
+    run_id: str,
+    store: SqlStore = Depends(get_store),
+    enqueue: Callable[[str], None] = Depends(get_enqueue),
+) -> ActionResult:
+    try:
+        actions.retry_run(store, run_id)
+    except actions.RunNotFound:
+        raise HTTPException(status_code=404, detail="run not found") from None
+    except actions.NotActionable as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from None
+    enqueue(run_id)
+    return ActionResult(id=run_id, status="PENDING", enqueued=True)

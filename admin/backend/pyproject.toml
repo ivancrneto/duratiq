@@ -10,10 +10,13 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic-settings>=2.4",
     "psycopg[binary]>=3.1",
+    "dramatiq>=1.16",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+# Broker client libs for the Retry action. Install the one your workers use.
+broker = ["dramatiq[redis,rabbitmq]>=1.16"]
 
 # Reuse the duratiq package (models + SqlStore) from the parent project, editable.
 [tool.uv.sources]

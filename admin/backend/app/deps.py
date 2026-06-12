@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from fastapi import Header, HTTPException, status
 from sqlalchemy.orm import Session
 
+from .broker import enqueue_tick
 from .core.config import settings
 from .db import get_store
 
@@ -31,3 +32,17 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
             detail="Invalid or missing admin token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def get_enqueue() -> Callable[[str], None]:
+    """Return the tick-enqueue callable, or 503 if no broker is configured.
+
+    Evaluated before the handler body, so a retry with no broker fails fast and
+    never mutates the run.
+    """
+    if not settings.broker_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="retry requires a broker: set DURATIQ_BROKER_URL",
+        )
+    return enqueue_tick
