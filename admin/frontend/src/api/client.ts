@@ -52,16 +52,28 @@ export interface Stats {
   by_status: Record<string, number>;
 }
 
+export interface ActionResult {
+  id: string;
+  status: RunStatus;
+  enqueued: boolean;
+}
+
+export const TERMINAL: RunStatus[] = ["COMPLETED", "FAILED", "CANCELLED"];
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const res = await fetch(path, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    ...init,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -95,4 +107,12 @@ export const api = {
   getRun: (id: string) => apiFetch<Run>(`/api/runs/${encodeURIComponent(id)}`),
   getSteps: (id: string) =>
     apiFetch<Step[]>(`/api/runs/${encodeURIComponent(id)}/steps`),
+  cancelRun: (id: string) =>
+    apiFetch<ActionResult>(`/api/runs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+    }),
+  retryRun: (id: string) =>
+    apiFetch<ActionResult>(`/api/runs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+    }),
 };

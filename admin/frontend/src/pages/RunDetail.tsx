@@ -1,6 +1,7 @@
 import { Link as RouterLink, useParams } from "react-router-dom";
 import {
   Box,
+  Button,
   Divider,
   Grid,
   GridItem,
@@ -8,21 +9,52 @@ import {
   Heading,
   Link,
   SimpleGrid,
+  Spacer,
   Spinner,
   Stack,
   Text,
+  useToast,
 } from "@chakra-ui/react";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "../api/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { TERMINAL, api } from "../api/client";
 import { JsonBlock } from "../components/JsonBlock";
 import { StatusBadge } from "../components/StatusBadge";
 
 export function RunDetail() {
   const { runId = "" } = useParams();
+  const qc = useQueryClient();
+  const toast = useToast();
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.getRun(runId) });
   const steps = useQuery({
     queryKey: ["steps", runId],
     queryFn: () => api.getSteps(runId),
+  });
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["run", runId] });
+    qc.invalidateQueries({ queryKey: ["steps", runId] });
+    qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["runs"] });
+  };
+
+  const cancel = useMutation({
+    mutationFn: () => api.cancelRun(runId),
+    onSuccess: () => {
+      toast({ status: "success", title: "Run cancelled" });
+      refresh();
+    },
+    onError: (e: Error) =>
+      toast({ status: "error", title: "Cancel failed", description: e.message }),
+  });
+
+  const retry = useMutation({
+    mutationFn: () => api.retryRun(runId),
+    onSuccess: () => {
+      toast({ status: "success", title: "Retry enqueued", description: "Run re-armed to PENDING." });
+      refresh();
+    },
+    onError: (e: Error) =>
+      toast({ status: "error", title: "Retry failed", description: e.message }),
   });
 
   if (run.isLoading) return <Spinner />;
@@ -31,6 +63,7 @@ export function RunDetail() {
   if (!run.data) return null;
 
   const r = run.data;
+  const isTerminal = TERMINAL.includes(r.status);
 
   return (
     <Stack spacing={6}>
@@ -41,6 +74,33 @@ export function RunDetail() {
         <HStack mt={2} align="center" spacing={3}>
           <Heading size="md">{r.name}</Heading>
           <StatusBadge status={r.status} />
+          <Spacer />
+          {!isTerminal && (
+            <Button
+              size="sm"
+              colorScheme="red"
+              variant="outline"
+              isLoading={cancel.isPending}
+              onClick={() =>
+                window.confirm(`Cancel run ${r.id}?`) && cancel.mutate()
+              }
+            >
+              Cancel
+            </Button>
+          )}
+          {r.status === "FAILED" && (
+            <Button
+              size="sm"
+              colorScheme="purple"
+              isLoading={retry.isPending}
+              onClick={() =>
+                window.confirm(`Retry run ${r.id}? This re-runs the failed step.`) &&
+                retry.mutate()
+              }
+            >
+              Retry
+            </Button>
+          )}
         </HStack>
         <Text fontFamily="mono" color="gray.500" fontSize="sm">
           {r.id}
