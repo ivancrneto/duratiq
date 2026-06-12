@@ -1,37 +1,24 @@
 // Probes the API with the current token. On 401 it shows a token form instead of
 // the app; on success it renders children. Re-runs whenever the token changes.
 
-import { useEffect, useState } from "react";
-import {
-  Alert,
-  AlertIcon,
-  Box,
-  Button,
-  Center,
-  Heading,
-  Input,
-  Stack,
-  Text,
-} from "@chakra-ui/react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, api } from "../api/client";
 import { onTokenChange, setToken } from "./token";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
-export function TokenGate({ children }: { children: React.ReactNode }) {
+export function TokenGate({ children }: { children: ReactNode }) {
   const [, force] = useState(0);
   useEffect(() => onTokenChange(() => force((n) => n + 1)), []);
 
-  const probe = useQuery({
-    queryKey: ["probe"],
-    queryFn: api.stats,
-    retry: false,
-  });
+  const probe = useQuery({ queryKey: ["probe"], queryFn: api.stats, retry: false });
 
   if (probe.isLoading) {
     return (
-      <Center h="60vh">
-        <Text color="gray.500">Connecting…</Text>
-      </Center>
+      <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
+        Connecting…
+      </div>
     );
   }
 
@@ -41,12 +28,11 @@ export function TokenGate({ children }: { children: React.ReactNode }) {
 
   if (probe.error) {
     return (
-      <Center h="60vh" px={6}>
-        <Alert status="error" maxW="md" borderRadius="md">
-          <AlertIcon />
+      <div className="flex h-[60vh] items-center justify-center px-6">
+        <div className="max-w-md rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           Cannot reach the API: {(probe.error as Error).message}
-        </Alert>
-      </Center>
+        </div>
+      </div>
     );
   }
 
@@ -56,29 +42,23 @@ export function TokenGate({ children }: { children: React.ReactNode }) {
 function TokenForm() {
   const [value, setValue] = useState("");
   return (
-    <Center h="70vh" px={6}>
-      <Box maxW="sm" w="full">
-        <Stack spacing={4}>
-          <Heading size="md">Duratiq Admin</Heading>
-          <Text color="gray.500" fontSize="sm">
-            Enter the admin token to continue.
-          </Text>
-          <Input
-            type="password"
-            placeholder="ADMIN_TOKEN"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && value && setToken(value)}
-          />
-          <Button
-            colorScheme="purple"
-            isDisabled={!value}
-            onClick={() => setToken(value)}
-          >
-            Sign in
-          </Button>
-        </Stack>
-      </Box>
-    </Center>
+    <div className="flex h-[70vh] items-center justify-center px-6">
+      <div className="w-full max-w-sm space-y-4">
+        <h1 className="text-lg font-semibold">Duratiq Admin</h1>
+        <p className="text-sm text-muted-foreground">
+          Enter the admin token to continue.
+        </p>
+        <Input
+          type="password"
+          placeholder="ADMIN_TOKEN"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && value && setToken(value)}
+        />
+        <Button className="w-full" disabled={!value} onClick={() => setToken(value)}>
+          Sign in
+        </Button>
+      </div>
+    </div>
   );
 }

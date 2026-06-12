@@ -1,29 +1,26 @@
 import { useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
-import {
-  Button,
-  Flex,
-  HStack,
-  Input,
-  Link,
-  SimpleGrid,
-  Spinner,
-  Stat,
-  StatLabel,
-  StatNumber,
-  Table,
-  Tbody,
-  Td,
-  Text,
-  Th,
-  Thead,
-  Tr,
-  Select,
-  Box,
-} from "@chakra-ui/react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const STATUSES = [
   "PENDING",
@@ -34,6 +31,7 @@ const STATUSES = [
   "CANCELLED",
 ];
 const PAGE = 25;
+const ALL = "__all__"; // Radix Select items can't have an empty value.
 
 export function RunsList() {
   const [status, setStatus] = useState("");
@@ -43,38 +41,43 @@ export function RunsList() {
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.stats });
   const runs = useQuery({
     queryKey: ["runs", status, name, offset],
-    queryFn: () =>
-      api.listRuns({ status, name, limit: PAGE, offset }),
+    queryFn: () => api.listRuns({ status, name, limit: PAGE, offset }),
     placeholderData: keepPreviousData,
   });
 
   return (
-    <Box>
-      <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4} mb={6}>
+    <div>
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatCard label="Total runs" value={stats.data?.total} />
         {["COMPLETED", "RUNNING", "FAILED"].map((s) => (
           <StatCard key={s} label={s} value={stats.data?.by_status[s] ?? 0} />
         ))}
-      </SimpleGrid>
+      </div>
 
-      <HStack mb={4} spacing={3} flexWrap="wrap">
-        <Select
-          maxW="48"
-          placeholder="All statuses"
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value);
-            setOffset(0);
-          }}
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </Select>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="w-48">
+          <Select
+            value={status || ALL}
+            onValueChange={(v) => {
+              setStatus(v === ALL ? "" : v);
+              setOffset(0);
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All statuses</SelectItem>
+              {STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <Input
-          maxW="64"
+          className="w-64"
           placeholder="Filter by workflow name"
           value={name}
           onChange={(e) => {
@@ -82,92 +85,90 @@ export function RunsList() {
             setOffset(0);
           }}
         />
-        <Button onClick={() => runs.refetch()} isLoading={runs.isFetching}>
+        <Button variant="outline" onClick={() => runs.refetch()}>
           Refresh
         </Button>
-      </HStack>
+      </div>
 
       {runs.isLoading ? (
-        <Spinner />
+        <div className="text-muted-foreground">Loading…</div>
       ) : (
-        <Box borderWidth="1px" borderRadius="md" overflowX="auto">
-          <Table size="sm">
-            <Thead>
-              <Tr>
-                <Th>Run ID</Th>
-                <Th>Workflow</Th>
-                <Th>Status</Th>
-                <Th>Created</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
+        <Card className="overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Run ID</TableHead>
+                <TableHead>Workflow</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Created</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {runs.data?.items.map((r) => (
-                <Tr key={r.id}>
-                  <Td>
-                    <Link
-                      as={RouterLink}
+                <TableRow key={r.id}>
+                  <TableCell>
+                    <RouterLink
                       to={`/runs/${r.id}`}
-                      color="purple.600"
-                      fontFamily="mono"
+                      className="font-mono text-primary hover:underline"
                     >
                       {r.id.slice(0, 12)}…
-                    </Link>
-                  </Td>
-                  <Td>{r.name}</Td>
-                  <Td>
+                    </RouterLink>
+                  </TableCell>
+                  <TableCell>{r.name}</TableCell>
+                  <TableCell>
                     <StatusBadge status={r.status} />
-                  </Td>
-                  <Td whiteSpace="nowrap" color="gray.500">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
                     {new Date(r.created_at).toLocaleString()}
-                  </Td>
-                </Tr>
+                  </TableCell>
+                </TableRow>
               ))}
               {runs.data?.items.length === 0 && (
-                <Tr>
-                  <Td colSpan={4}>
-                    <Text color="gray.500" py={4}>
-                      No runs match.
-                    </Text>
-                  </Td>
-                </Tr>
+                <TableRow>
+                  <TableCell colSpan={4}>
+                    <div className="py-4 text-muted-foreground">No runs match.</div>
+                  </TableCell>
+                </TableRow>
               )}
-            </Tbody>
+            </TableBody>
           </Table>
-        </Box>
+        </Card>
       )}
 
-      <Flex mt={4} align="center" justify="space-between">
-        <Text color="gray.500" fontSize="sm">
+      <div className="mt-4 flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">
           {runs.data
             ? `${offset + 1}–${Math.min(offset + PAGE, runs.data.total)} of ${runs.data.total}`
             : ""}
-        </Text>
-        <HStack>
+        </span>
+        <div className="flex gap-2">
           <Button
+            variant="outline"
             size="sm"
             onClick={() => setOffset(Math.max(0, offset - PAGE))}
-            isDisabled={offset === 0}
+            disabled={offset === 0}
           >
             Prev
           </Button>
           <Button
+            variant="outline"
             size="sm"
             onClick={() => setOffset(offset + PAGE)}
-            isDisabled={!runs.data || offset + PAGE >= runs.data.total}
+            disabled={!runs.data || offset + PAGE >= runs.data.total}
           >
             Next
           </Button>
-        </HStack>
-      </Flex>
-    </Box>
+        </div>
+      </div>
+    </div>
   );
 }
 
 function StatCard({ label, value }: { label: string; value?: number }) {
   return (
-    <Stat borderWidth="1px" borderRadius="md" p={4}>
-      <StatLabel color="gray.500">{label}</StatLabel>
-      <StatNumber>{value ?? "—"}</StatNumber>
-    </Stat>
+    <Card className="p-4">
+      <div className="text-sm text-muted-foreground">{label}</div>
+      <div className="mt-1 text-2xl font-semibold">{value ?? "—"}</div>
+    </Card>
   );
 }

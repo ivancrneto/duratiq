@@ -1,39 +1,33 @@
 import { Link as RouterLink, Route, Routes } from "react-router-dom";
-import { Box, Button, Container, Flex, Heading, Spacer } from "@chakra-ui/react";
 import { TokenGate } from "./auth/TokenGate";
 import { clearToken } from "./auth/token";
 import { RunsList } from "./pages/RunsList";
 import { RunDetail } from "./pages/RunDetail";
+import { Button } from "@/components/ui/button";
 
 export default function App() {
   return (
-    <Box minH="100vh" bg="gray.50">
-      <Box bg="white" borderBottomWidth="1px">
-        <Container maxW="6xl">
-          <Flex align="center" h={14}>
-            <Heading
-              size="sm"
-              as={RouterLink}
-              to="/"
-              _hover={{ color: "purple.600" }}
-            >
-              Duratiq Admin
-            </Heading>
-            <Spacer />
-            <Button size="sm" variant="ghost" onClick={clearToken}>
+    <div className="min-h-screen bg-muted/30">
+      <header className="border-b bg-background">
+        <div className="mx-auto flex h-14 max-w-6xl items-center px-4">
+          <RouterLink to="/" className="text-sm font-semibold hover:text-primary">
+            Duratiq Admin
+          </RouterLink>
+          <div className="ml-auto">
+            <Button variant="ghost" size="sm" onClick={clearToken}>
               Sign out
             </Button>
-          </Flex>
-        </Container>
-      </Box>
-      <Container maxW="6xl" py={8}>
+          </div>
+        </div>
+      </header>
+      <main className="mx-auto max-w-6xl px-4 py-8">
         <TokenGate>
           <Routes>
             <Route path="/" element={<RunsList />} />
             <Route path="/runs/:runId" element={<RunDetail />} />
           </Routes>
         </TokenGate>
-      </Container>
-    </Box>
+      </main>
+    </div>
   );
 }

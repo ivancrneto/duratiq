@@ -1,29 +1,18 @@
+import { type ReactNode } from "react";
 import { Link as RouterLink, useParams } from "react-router-dom";
-import {
-  Box,
-  Button,
-  Divider,
-  Grid,
-  GridItem,
-  HStack,
-  Heading,
-  Link,
-  SimpleGrid,
-  Spacer,
-  Spinner,
-  Stack,
-  Text,
-  useToast,
-} from "@chakra-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { TERMINAL, api } from "../api/client";
 import { JsonBlock } from "../components/JsonBlock";
 import { StatusBadge } from "../components/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 
 export function RunDetail() {
   const { runId = "" } = useParams();
   const qc = useQueryClient();
-  const toast = useToast();
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.getRun(runId) });
   const steps = useQuery({
     queryKey: ["steps", runId],
@@ -40,81 +29,76 @@ export function RunDetail() {
   const cancel = useMutation({
     mutationFn: () => api.cancelRun(runId),
     onSuccess: () => {
-      toast({ status: "success", title: "Run cancelled" });
+      toast.success("Run cancelled");
       refresh();
     },
-    onError: (e: Error) =>
-      toast({ status: "error", title: "Cancel failed", description: e.message }),
+    onError: (e: Error) => toast.error("Cancel failed", { description: e.message }),
   });
 
   const retry = useMutation({
     mutationFn: () => api.retryRun(runId),
     onSuccess: () => {
-      toast({ status: "success", title: "Retry enqueued", description: "Run re-armed to PENDING." });
+      toast.success("Retry enqueued", { description: "Run re-armed to PENDING." });
       refresh();
     },
-    onError: (e: Error) =>
-      toast({ status: "error", title: "Retry failed", description: e.message }),
+    onError: (e: Error) => toast.error("Retry failed", { description: e.message }),
   });
 
-  if (run.isLoading) return <Spinner />;
+  if (run.isLoading) return <div className="text-muted-foreground">Loading…</div>;
   if (run.error)
-    return <Text color="red.500">{(run.error as Error).message}</Text>;
+    return <div className="text-destructive">{(run.error as Error).message}</div>;
   if (!run.data) return null;
 
   const r = run.data;
   const isTerminal = TERMINAL.includes(r.status);
 
   return (
-    <Stack spacing={6}>
-      <Box>
-        <Link as={RouterLink} to="/" color="purple.600" fontSize="sm">
+    <div className="space-y-6">
+      <div>
+        <RouterLink to="/" className="text-sm text-primary hover:underline">
           ← All runs
-        </Link>
-        <HStack mt={2} align="center" spacing={3}>
-          <Heading size="md">{r.name}</Heading>
+        </RouterLink>
+        <div className="mt-2 flex items-center gap-3">
+          <h1 className="text-xl font-semibold">{r.name}</h1>
           <StatusBadge status={r.status} />
-          <Spacer />
-          {!isTerminal && (
-            <Button
-              size="sm"
-              colorScheme="red"
-              variant="outline"
-              isLoading={cancel.isPending}
-              onClick={() =>
-                window.confirm(`Cancel run ${r.id}?`) && cancel.mutate()
-              }
-            >
-              Cancel
-            </Button>
-          )}
-          {r.status === "FAILED" && (
-            <Button
-              size="sm"
-              colorScheme="purple"
-              isLoading={retry.isPending}
-              onClick={() =>
-                window.confirm(`Retry run ${r.id}? This re-runs the failed step.`) &&
-                retry.mutate()
-              }
-            >
-              Retry
-            </Button>
-          )}
-        </HStack>
-        <Text fontFamily="mono" color="gray.500" fontSize="sm">
-          {r.id}
-        </Text>
-      </Box>
+          <div className="ml-auto flex gap-2">
+            {!isTerminal && (
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={cancel.isPending}
+                onClick={() =>
+                  window.confirm(`Cancel run ${r.id}?`) && cancel.mutate()
+                }
+              >
+                Cancel
+              </Button>
+            )}
+            {r.status === "FAILED" && (
+              <Button
+                size="sm"
+                disabled={retry.isPending}
+                onClick={() =>
+                  window.confirm(`Retry run ${r.id}? This re-runs the failed step.`) &&
+                  retry.mutate()
+                }
+              >
+                Retry
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="font-mono text-sm text-muted-foreground">{r.id}</div>
+      </div>
 
-      <SimpleGrid columns={{ base: 2, md: 4 }} spacing={4}>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Field label="Version" value={String(r.version)} />
         <Field label="Created" value={new Date(r.created_at).toLocaleString()} />
         <Field label="Updated" value={new Date(r.updated_at).toLocaleString()} />
         <Field label="Lease owner" value={r.lease_owner ?? "—"} />
-      </SimpleGrid>
+      </div>
 
-      <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Labeled label="Input">
           <JsonBlock value={r.input} />
         </Labeled>
@@ -124,77 +108,66 @@ export function RunDetail() {
         <Labeled label="Error">
           <JsonBlock value={r.error} />
         </Labeled>
-      </SimpleGrid>
+      </div>
 
-      <Divider />
+      <Separator />
 
-      <Box>
-        <Heading size="sm" mb={3}>
+      <div>
+        <h2 className="mb-3 text-sm font-semibold">
           Steps {steps.data ? `(${steps.data.length})` : ""}
-        </Heading>
+        </h2>
         {steps.isLoading ? (
-          <Spinner />
+          <div className="text-muted-foreground">Loading…</div>
         ) : (
-          <Stack spacing={3}>
+          <div className="space-y-3">
             {steps.data?.map((s) => (
-              <Grid
-                key={s.seq}
-                templateColumns={{ base: "1fr", md: "auto 1fr" }}
-                gap={4}
-                borderWidth="1px"
-                borderRadius="md"
-                p={4}
-              >
-                <GridItem>
-                  <Text fontFamily="mono" color="gray.400" fontSize="sm">
+              <Card key={s.seq} className="p-4">
+                <div className="flex gap-4">
+                  <div className="font-mono text-sm text-muted-foreground">
                     #{s.seq}
-                  </Text>
-                </GridItem>
-                <GridItem>
-                  <HStack spacing={3} mb={2} flexWrap="wrap">
-                    <Text fontWeight="semibold">{s.name}</Text>
-                    <Text color="gray.500" fontSize="sm">
-                      {s.kind}
-                    </Text>
-                    <StatusBadge status={s.status} />
-                    {s.attempt > 0 && (
-                      <Text color="gray.500" fontSize="sm">
-                        attempt {s.attempt}
-                      </Text>
-                    )}
-                  </HStack>
-                  <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3}>
-                    <Labeled label="Input" small>
-                      <JsonBlock value={s.input} />
-                    </Labeled>
-                    <Labeled label="Result" small>
-                      <JsonBlock value={s.result} />
-                    </Labeled>
-                    <Labeled label="Error" small>
-                      <JsonBlock value={s.error} />
-                    </Labeled>
-                  </SimpleGrid>
-                </GridItem>
-              </Grid>
+                  </div>
+                  <div className="flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-3">
+                      <span className="font-semibold">{s.name}</span>
+                      <span className="text-sm text-muted-foreground">{s.kind}</span>
+                      <StatusBadge status={s.status} />
+                      {s.attempt > 0 && (
+                        <span className="text-sm text-muted-foreground">
+                          attempt {s.attempt}
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                      <Labeled label="Input" small>
+                        <JsonBlock value={s.input} />
+                      </Labeled>
+                      <Labeled label="Result" small>
+                        <JsonBlock value={s.result} />
+                      </Labeled>
+                      <Labeled label="Error" small>
+                        <JsonBlock value={s.error} />
+                      </Labeled>
+                    </div>
+                  </div>
+                </div>
+              </Card>
             ))}
             {steps.data?.length === 0 && (
-              <Text color="gray.500">No steps recorded yet.</Text>
+              <div className="text-muted-foreground">No steps recorded yet.</div>
             )}
-          </Stack>
+          </div>
         )}
-      </Box>
-    </Stack>
+      </div>
+    </div>
   );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
-    <Box borderWidth="1px" borderRadius="md" p={3}>
-      <Text color="gray.500" fontSize="xs">
-        {label}
-      </Text>
-      <Text fontSize="sm">{value}</Text>
-    </Box>
+    <Card className="p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-sm">{value}</div>
+    </Card>
   );
 }
 
@@ -205,14 +178,14 @@ function Labeled({
 }: {
   label: string;
   small?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <Box>
-      <Text color="gray.500" fontSize={small ? "xs" : "sm"} mb={1}>
+    <div>
+      <div className={cn("mb-1 text-muted-foreground", small ? "text-xs" : "text-sm")}>
         {label}
-      </Text>
+      </div>
       {children}
-    </Box>
+    </div>
   );
 }
