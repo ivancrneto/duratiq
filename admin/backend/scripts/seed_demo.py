@@ -26,11 +26,22 @@ def email_receipt(order_id: str, payment_id: str) -> str:
     return f"emailed:{order_id}"
 
 
+@activity(name="charge_card_flaky", registry=reg)
+def charge_card_flaky(order_id: str) -> str:
+    raise RuntimeError("payment gateway timeout")
+
+
 @workflow(name="checkout", registry=reg)
 def checkout(ctx, order_id: str):  # noqa: ANN001
     payment_id = ctx.activity(charge_card, order_id, 1999)
     ctx.activity(email_receipt, order_id, payment_id)
     return {"order_id": order_id, "payment_id": payment_id}
+
+
+@workflow(name="checkout_flaky", registry=reg)
+def checkout_flaky(ctx, order_id: str):  # noqa: ANN001
+    ctx.activity(charge_card_flaky, order_id)
+    return {"order_id": order_id}
 
 
 def main() -> None:
@@ -40,10 +51,22 @@ def main() -> None:
     engine = Engine(reg, store)
     LocalDriver(engine)
 
+    # Happy-path runs -> COMPLETED.
     for order_id in ("A123", "B456", "C789"):
         run_id = engine.start("checkout", order_id=order_id)
         engine.driver.run_until_idle()
         print(f"{order_id}: {engine.get(run_id).status}")
+
+    # A failing run -> FAILED (retryable in the admin).
+    failed = engine.start("checkout_flaky", order_id="D999")
+    engine.driver.run_until_idle()
+    print(f"D999: {engine.get(failed).status}")
+
+    # A partially-pumped run -> SUSPENDED (cancellable in the admin): process just
+    # the first tick (which schedules an activity) and leave the activity un-run.
+    suspended = engine.start("checkout", order_id="E000")
+    engine.driver.step()
+    print(f"E000: {engine.get(suspended).status}")
 
     print(f"\nSeeded {path}. Start the admin with DATABASE_URL=sqlite:///{path}")
 
