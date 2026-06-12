@@ -1,0 +1,50 @@
+# Duratiq Admin — Postgres + backend (FastAPI) + frontend (nginx).
+#
+# The admin is READ-ONLY: it does not create the duratiq schema. Point it at a
+# database your duratiq engine already writes to. For a throwaway demo against
+# the bundled Postgres, seed it once after `up`:
+#
+#   docker compose exec backend python -c "import scripts" 2>/dev/null || true
+#   # or run the engine / seed_demo.py against DATABASE_URL below.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: duratiq
+      POSTGRES_PASSWORD: duratiq
+      POSTGRES_DB: duratiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U duratiq"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ..          # duratiq project root, so the duratiq pkg is in scope
+      dockerfile: admin/backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://duratiq:duratiq@postgres:5432/duratiq
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-please}
+      CORS_ORIGINS: http://localhost:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
