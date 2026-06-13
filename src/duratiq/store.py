@@ -108,11 +108,7 @@ class SqlStore:
     # ----------------------------------------------------------------- steps
     def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:
         def _query(s: Session) -> list[WorkflowStep]:
-            return list(
-                s.scalars(
-                    select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)
-                )
-            )
+            return list(s.scalars(select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)))
 
         if session is not None:
             return _query(session)
@@ -136,8 +132,13 @@ class SqlStore:
                 return  # idempotent: this command was already scheduled on a prior tick
             s.add(
                 WorkflowStep(
-                    run_id=run_id, seq=seq, kind=kind, name=name, input=input,
-                    status=status, result=result,
+                    run_id=run_id,
+                    seq=seq,
+                    kind=kind,
+                    name=name,
+                    input=input,
+                    status=status,
+                    result=result,
                     completed_at=utcnow() if status == "COMPLETED" else None,
                 )
             )
