@@ -20,7 +20,7 @@ from sqlalchemy import Engine as SaEngine
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, WorkflowRun, WorkflowStep, WorkflowTimer, utcnow
+from .models import Base, WorkflowRun, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
 
 
 def _advisory_key(run_id: str) -> int:
@@ -186,6 +186,63 @@ class SqlStore:
                     step.completed_at = now
                 fired_runs.append(timer.run_id)
         return fired_runs
+
+    # --------------------------------------------------------------- signals
+    def add_signal(
+        self,
+        run_id: str,
+        name: str,
+        payload: Any,
+        *,
+        session: Session | None = None,
+    ) -> None:
+        def _apply(s: Session) -> None:
+            s.add(WorkflowSignal(run_id=run_id, name=name, payload=payload))
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def match_signals(self, run_id: str, *, session: Session) -> int:
+        """Pair queued signals with waiting steps, FIFO within each name.
+
+        For every SCHEDULED SIGNAL_WAIT step (oldest seq first) with an unconsumed
+        signal of the same name (oldest first), completes the step with the signal's
+        payload and stamps ``consumed_seq``. Returns how many waits were satisfied;
+        the caller re-ticks the run when that is non-zero.
+        """
+        waits = list(
+            session.scalars(
+                select(WorkflowStep)
+                .where(
+                    WorkflowStep.run_id == run_id,
+                    WorkflowStep.kind == "SIGNAL_WAIT",
+                    WorkflowStep.status == "SCHEDULED",
+                )
+                .order_by(WorkflowStep.seq)
+            )
+        )
+        signals = list(
+            session.scalars(
+                select(WorkflowSignal)
+                .where(WorkflowSignal.run_id == run_id, WorkflowSignal.consumed_seq.is_(None))
+                .order_by(WorkflowSignal.id)
+            )
+        )
+
+        matched = 0
+        for wait in waits:
+            signal = next((sig for sig in signals if sig.name == wait.name and sig.consumed_seq is None), None)
+            if signal is None:
+                continue  # nothing for this name yet; leave it waiting
+            signal.consumed_seq = wait.seq
+            wait.status = "COMPLETED"
+            wait.result = {"value": signal.payload}
+            wait.completed_at = utcnow()
+            matched += 1
+        return matched
 
     # ------------------------------------------------------------------ lock
     @contextmanager

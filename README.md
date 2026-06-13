@@ -5,9 +5,9 @@ Dramatiq" — durable execution that runs on the stack you already have (Dramati
 actors, your broker, Postgres), with no separate orchestration cluster.
 
 > This is the **W1–W3 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
-> activities, replay, memoization, crash recovery, and durable timers
-> (`ctx.sleep`). Signals, `gather`, retries-policy wiring, and a stale-lease
-> recovery scanner are the next milestones.
+> activities, replay, memoization, crash recovery, durable timers (`ctx.sleep`),
+> and signals (`ctx.wait_signal`). `gather`, retries-policy wiring, and a
+> stale-lease recovery scanner are the next milestones.
 
 ## The idea
 
@@ -85,7 +85,28 @@ periodic **timer scanner** drives it — call `engine.fire_due_timers()` from cr
 or `periodiq`; it delivers every elapsed timer and re-ticks the runs they unblock.
 Tests pass `now=...` to fast-forward without sleeping.
 
+## Signals
+
+`ctx.wait_signal(name)` parks a run until an outside actor delivers a matching
+signal — a human approval, a webhook, another service:
+
+```python
+@workflow(name="review_order", registry=reg)
+def review_order(ctx, order_id):
+    decision = ctx.wait_signal("review")     # suspends, holding no worker
+    if decision["approved"]:
+        return ctx.activity(fulfil_order, order_id)
+    return ctx.activity(reject_order, order_id)
+
+# elsewhere — minutes or days later:
+engine.signal(run_id, "review", {"approved": True})
+```
+
+Signals are stored in `workflow_signals` independently of the waits that consume
+them, so one that arrives *before* its wait is queued and matched FIFO by name —
+no race. The consumed payload is memoized, so replay returns it without re-waiting.
+
 ## What's next (from the plan)
 
-`ctx.wait_signal` + signal delivery, `ctx.gather` (parallel barrier), per-activity
-retry policy wired to Dramatiq retries, and a recovery scanner for stale leases.
+`ctx.gather` (parallel barrier), per-activity retry policy wired to Dramatiq
+retries, and a recovery scanner for stale leases.

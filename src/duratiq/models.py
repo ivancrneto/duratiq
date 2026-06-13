@@ -5,9 +5,12 @@ The tables are the heart of the engine:
 * ``workflow_runs``   — one row per workflow execution.
 * ``workflow_steps``  — the event history; one row per ``ctx.*`` command, keyed by
   the deterministic ``seq`` index. Replay reads these to skip completed work.
-* ``workflow_timers`` — the due-time index for ``ctx.sleep``. A timer points back
+* ``workflow_timers``  — the due-time index for ``ctx.sleep``. A timer points back
   at its ``(run_id, seq)`` TIMER step; the timer scanner finds the ones whose
   ``fire_at`` has elapsed, marks the step COMPLETED, and re-ticks the run.
+* ``workflow_signals`` — the inbox for ``ctx.wait_signal``. Signals are stored
+  independently of the waits that consume them (a signal can arrive before the
+  workflow waits for it); ``consumed_seq`` records which SIGNAL_WAIT step took it.
 """
 
 from __future__ import annotations
@@ -78,3 +81,21 @@ class WorkflowTimer(Base):
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
     fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class WorkflowSignal(Base):
+    """The inbox for ``ctx.wait_signal`` — one row per delivered signal.
+
+    A signal may arrive before the workflow reaches the matching wait, so signals
+    live here independently and are paired with SIGNAL_WAIT steps FIFO by name.
+    ``consumed_seq`` is the seq of the wait that took it (``NULL`` while unconsumed).
+    """
+
+    __tablename__ = "workflow_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    payload: Mapped[Any] = mapped_column(JSON, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)

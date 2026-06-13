@@ -6,8 +6,9 @@ messages, and all state lives in Postgres so a run resumes exactly where it left
 off after a crash.
 
 This package covers W1–W3 (partial) of DURATIQ_MVP_PLAN.md: activities, replay,
-memoization, crash recovery, and durable timers (``ctx.sleep``). Signals, gather,
-and a stale-lease recovery scanner are the next milestones.
+memoization, crash recovery, durable timers (``ctx.sleep``), and signals
+(``ctx.wait_signal``). gather and a stale-lease recovery scanner are the next
+milestones.
 """
 
 from __future__ import annotations

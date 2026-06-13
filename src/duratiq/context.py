@@ -47,12 +47,19 @@ class ScheduledTimer:
     delay_seconds: float
 
 
+@dataclass
+class ScheduledWait:
+    seq: int
+    name: str
+
+
 class WorkflowContext:
     def __init__(self, run_id: str, steps: list) -> None:
         self.run_id = run_id
         self._history = {step.seq: step for step in steps}
         self.scheduled: list[ScheduledActivity] = []
         self.scheduled_timers: list[ScheduledTimer] = []
+        self.scheduled_waits: list[ScheduledWait] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -120,4 +127,37 @@ class WorkflowContext:
 
         # Not in history: schedule the timer (the engine computes fire_at + records it).
         self.scheduled_timers.append(ScheduledTimer(seq=seq, delay_seconds=duration_seconds(duration)))
+        raise Suspend()
+
+    def wait_signal(self, name: str) -> Any:
+        """Wait for an external signal named ``name`` and return its payload.
+
+        The run suspends until ``engine.signal(run_id, name, payload)`` delivers a
+        matching signal — typically a human action (approval, cancellation) or an
+        outside event. Signals that arrive *before* the wait is reached are queued
+        and matched FIFO, so there is no race. On replay the consumed payload is
+        returned without re-waiting.
+        """
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is not None:
+            if step.kind != "SIGNAL_WAIT":
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, "
+                    f"but the workflow called ctx.wait_signal(). Did the workflow code change?"
+                )
+            if step.name != name:
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history waited on signal {step.name!r}, "
+                    f"but the workflow now waits on {name!r}. Did the workflow code change?"
+                )
+            if step.status == "COMPLETED":
+                return (step.result or {}).get("value")
+            # SCHEDULED — no matching signal has arrived yet.
+            raise Suspend()
+
+        # Not in history: register the wait (the engine records it and pairs any
+        # already-queued signal in the same transaction).
+        self.scheduled_waits.append(ScheduledWait(seq=seq, name=name))
         raise Suspend()

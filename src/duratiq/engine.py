@@ -3,8 +3,8 @@
 A workflow run advances one *tick* at a time. Each tick replays the orchestrator
 from the start; recorded steps return their memoized results, and the first
 not-ready point raises :class:`Suspend`, which releases the worker. A tick is
-re-requested whenever an activity completes or a timer fires (and later: a signal
-arrives), driving the run forward until it returns.
+re-requested whenever an activity completes, a timer fires, or a signal arrives,
+driving the run forward until it returns.
 """
 
 from __future__ import annotations
@@ -62,6 +62,7 @@ class Engine:
     # ----------------------------------------------------------------- core
     def tick(self, run_id: str) -> None:
         scheduled: list = []
+        matched = 0
         with self.store.locked_run(run_id) as session:
             run = self.store.get_run(run_id, session=session)
             if run is None or run.status in _TERMINAL:
@@ -109,10 +110,23 @@ class Engine:
                     fire_at=utcnow() + timedelta(seconds=st.delay_seconds), session=session,
                 )
 
+            # Record newly-registered signal waits, then pair any already-queued
+            # signal so a signal that arrived before its wait is consumed at once.
+            for sw in ctx.scheduled_waits:
+                self.store.create_step(
+                    run_id, sw.seq, kind="SIGNAL_WAIT", name=sw.name,
+                    input={"name": sw.name}, status="SCHEDULED", session=session,
+                )
+            if ctx.scheduled_waits:
+                matched = self.store.match_signals(run_id, session=session)
+
         # Dispatch only after the tick transaction has committed, so we never put a
         # message on the broker for a step that got rolled back.
         for sa in scheduled:
             self.driver.dispatch_activity(run_id, sa.seq, sa.name, sa.args, sa.kwargs, sa.max_retries)
+        # A queued signal was consumed during this tick — replay again to advance.
+        if matched:
+            self.driver.request_tick(run_id)
 
     def report_activity_result(self, run_id: str, seq: int, result: Any, error: BaseException | None) -> None:
         if error is None:
@@ -135,6 +149,24 @@ class Engine:
         for run_id in run_ids:
             self.driver.request_tick(run_id)
         return len(run_ids)
+
+    def signal(self, run_id: str, name: str, payload: Any = None) -> bool:
+        """Deliver a signal to a run, waking any matching ``ctx.wait_signal``.
+
+        The signal is stored even if no wait is outstanding yet — a later
+        ``wait_signal(name)`` will consume it FIFO. Returns ``False`` if the run is
+        missing or already terminal.
+        """
+        with self.store.locked_run(run_id) as session:
+            run = self.store.get_run(run_id, session=session)
+            if run is None or run.status in _TERMINAL:
+                return False
+            self.store.add_signal(run_id, name, payload, session=session)
+            self.store.match_signals(run_id, session=session)
+        # Re-tick unconditionally: a matched wait must replay to advance, and an
+        # unmatched signal is cheap (the tick is a no-op past the frontier).
+        self.driver.request_tick(run_id)
+        return True
 
     # -------------------------------------------------------------- control
     def cancel(self, run_id: str) -> bool:
