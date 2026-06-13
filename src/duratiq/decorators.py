@@ -48,7 +48,11 @@ def workflow(
     reg = registry or default_registry
 
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
-        reg.add_workflow(Workflow(fn=func, name=name or func.__name__, version=version))
+        wf = Workflow(fn=func, name=name or func.__name__, version=version)
+        reg.add_workflow(wf)
+        # Stash the registration so ``ctx.child_workflow(func)`` can recover the
+        # registered name even when it was customised via ``name=``.
+        func.__duratiq_workflow__ = wf  # type: ignore[attr-defined]
         return func
 
     return wrap(fn) if fn is not None else wrap
