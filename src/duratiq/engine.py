@@ -257,10 +257,23 @@ class Engine:
 
     # -------------------------------------------------------------- control
     def cancel(self, run_id: str) -> bool:
-        """Mark a non-terminal run ``CANCELLED``.
+        """Mark a non-terminal run ``CANCELLED``, cascading to its children.
 
-        Returns ``False`` if the run is missing or already terminal. No driver or
-        registry needed — ``tick`` already short-circuits on a cancelled run.
+        Any still-running child workflows are cancelled too (recursively, so an
+        entire sub-tree comes down), and if this run is itself a child, its parent's
+        ``ctx.child_workflow`` is resolved as failed so the parent doesn't wait
+        forever. Returns ``False`` if the run is missing or already terminal. No
+        driver or registry needed — ``tick`` already short-circuits a cancelled run.
+        """
+        return self._cancel(run_id, notify_parent=True)
+
+    def _cancel(self, run_id: str, *, notify_parent: bool) -> bool:
+        """Cancel one run and cascade to its children.
+
+        ``notify_parent`` is ``True`` for the run the caller cancelled directly (so
+        its parent learns the child is gone) and ``False`` for runs reached by the
+        downward cascade (their parent is already being cancelled, so there is
+        nothing to tell it).
         """
         parent_notify: tuple | None = None
         with self.store.locked_run(run_id) as session:
@@ -268,11 +281,15 @@ class Engine:
             if run is None or run.status in _TERMINAL:
                 return False
             self.store.update_run(run_id, session=session, status="CANCELLED")
-            if run.parent_run_id is not None:
+            if notify_parent and run.parent_run_id is not None:
                 error = {"type": "ChildWorkflowCancelled", "message": f"child workflow {run.name!r} was cancelled"}
                 parent_notify = (run.parent_run_id, run.parent_seq, "CANCELLED", None, error)
-        # A cancelled child resolves its parent's step as FAILED so the parent does
-        # not wait forever. (Cancelling a parent does not yet cascade to children.)
+        # Cascade down to any still-running children (which cascade to *their*
+        # children); they don't notify this run, since it's already cancelled.
+        for child_id in self.store.find_active_children(run_id):
+            self._cancel(child_id, notify_parent=False)
+        # A directly-cancelled child resolves its parent's step as FAILED so the
+        # parent does not wait forever.
         if parent_notify is not None:
             self._notify_parent(*parent_notify)
         return True

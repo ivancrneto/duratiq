@@ -168,8 +168,10 @@ parent, so the result is memoized and survives replay. A child that fails — or
 cancelled — raises `ChildWorkflowFailed` in the parent, where it can be caught or
 left to fail the parent (just like a failed `ctx.activity`). Starting a child is
 idempotent on `(parent_run_id, parent_seq)`, so a crash between committing the step
-and starting the sub-run is recovered without spawning a duplicate. (Cancelling a
-parent does not yet cascade to its children — a fast-follow item.)
+and starting the sub-run is recovered without spawning a duplicate. Cancelling a
+parent **cascades**: its still-running children (and theirs) are cancelled too;
+cancelling a child directly instead fails the parent's `child_workflow` so it
+doesn't wait forever.
 
 ## Retries
 

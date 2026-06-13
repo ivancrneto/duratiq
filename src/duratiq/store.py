@@ -80,6 +80,23 @@ class SqlStore:
                 )
             )
 
+    def find_active_children(self, parent_run_id: str) -> list[str]:
+        """Return the ids of this run's non-terminal child runs.
+
+        Used by cancellation to cascade: a parent coming down takes its still-running
+        children with it. Terminal children (already done/failed/cancelled) are left
+        as they are.
+        """
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id).where(
+                        WorkflowRun.parent_run_id == parent_run_id,
+                        WorkflowRun.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                    )
+                )
+            )
+
     def get_run(self, run_id: str, *, session: Session | None = None) -> WorkflowRun | None:
         if session is not None:
             return session.get(WorkflowRun, run_id)
