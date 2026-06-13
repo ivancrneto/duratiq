@@ -138,6 +138,7 @@ class SqlStore:
         status: str,
         result: Any = None,
         error: Any = None,
+        attempt: int = 0,
     ) -> None:
         with self.Session.begin() as s:
             step = s.get(WorkflowStep, (run_id, seq))
@@ -146,6 +147,7 @@ class SqlStore:
             step.status = status
             step.result = result
             step.error = error
+            step.attempt = attempt
             step.completed_at = utcnow()
 
     # ---------------------------------------------------------------- timers

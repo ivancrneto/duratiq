@@ -137,13 +137,15 @@ class Engine:
         if matched:
             self.driver.request_tick(run_id)
 
-    def report_activity_result(self, run_id: str, seq: int, result: Any, error: BaseException | None) -> None:
+    def report_activity_result(
+        self, run_id: str, seq: int, result: Any, error: BaseException | None, *, attempt: int = 0
+    ) -> None:
         if error is None:
-            self.store.complete_step(run_id, seq, status="COMPLETED", result={"value": result})
+            self.store.complete_step(run_id, seq, status="COMPLETED", result={"value": result}, attempt=attempt)
         else:
             self.store.complete_step(
                 run_id, seq, status="FAILED",
-                error={"type": type(error).__name__, "message": str(error)},
+                error={"type": type(error).__name__, "message": str(error)}, attempt=attempt,
             )
         self.driver.request_tick(run_id)
 

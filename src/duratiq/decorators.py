@@ -18,12 +18,20 @@ def activity(
     *,
     name: str | None = None,
     max_retries: int = 3,
+    min_backoff_ms: int | None = None,
+    max_backoff_ms: int | None = None,
     registry: Registry | None = None,
 ) -> Any:
     reg = registry or default_registry
 
     def wrap(func: Callable[..., Any]) -> Activity:
-        act = Activity(fn=func, name=name or func.__name__, max_retries=max_retries)
+        act = Activity(
+            fn=func,
+            name=name or func.__name__,
+            max_retries=max_retries,
+            min_backoff_ms=min_backoff_ms,
+            max_backoff_ms=max_backoff_ms,
+        )
         reg.add_activity(act)
         return act
 

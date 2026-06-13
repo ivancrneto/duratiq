@@ -25,7 +25,7 @@ class LocalDriver:
     def dispatch_activity(
         self, run_id: str, seq: int, name: str, args: list, kwargs: dict, max_retries: int
     ) -> None:
-        self.queue.append(("activity", run_id, seq, name, args, kwargs))
+        self.queue.append(("activity", run_id, seq, name, args, kwargs, max_retries))
 
     # ---- Pumping ----------------------------------------------------------
     def step(self) -> str | None:
@@ -36,13 +36,21 @@ class LocalDriver:
         if item[0] == "tick":
             self.engine.tick(item[1])
         else:
-            _, run_id, seq, name, args, kwargs = item
+            _, run_id, seq, name, args, kwargs, max_retries = item
             activity = self.engine.registry.get_activity(name)
-            try:
-                result = activity.fn(*args, **kwargs)
-                self.engine.report_activity_result(run_id, seq, result, None)
-            except Exception as exc:  # noqa: BLE001 - activity may raise anything
-                self.engine.report_activity_result(run_id, seq, None, exc)
+            # Retry inline up to max_retries (no backoff — this driver is for
+            # dev/tests); only record FAILED once the budget is exhausted.
+            attempt = 0
+            while True:
+                try:
+                    result = activity.fn(*args, **kwargs)
+                    self.engine.report_activity_result(run_id, seq, result, None, attempt=attempt)
+                    break
+                except Exception as exc:  # noqa: BLE001 - activity may raise anything
+                    if attempt >= max_retries:
+                        self.engine.report_activity_result(run_id, seq, None, exc, attempt=attempt)
+                        break
+                    attempt += 1
         return item[0]
 
     def run_until_idle(self) -> None:

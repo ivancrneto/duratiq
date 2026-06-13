@@ -4,11 +4,12 @@
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
 
-> This is the **W1–W4 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
-> activities, replay, memoization, crash recovery, durable timers (`ctx.sleep`),
-> signals (`ctx.wait_signal`), side effects (`ctx.side_effect`), a parallel barrier
-> (`ctx.gather`), and a recovery scanner for stalled runs. Per-activity
-> retry-policy wiring is the remaining W4 item.
+> This is the **W1–W4** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md)
+> — the core MVP engine: activities with per-activity retries, replay, memoization,
+> crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
+> effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and a recovery
+> scanner for stalled runs. Fast-follow items (child workflows, `continue-as-new`,
+> `ctx.patched` versioning) remain.
 
 ## The idea
 
@@ -146,6 +147,25 @@ workflow resumes only once every branch has completed, and results come back in
 call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
+
+## Retries
+
+A failing activity is retried before it sinks the workflow. `@activity` carries the
+policy:
+
+```python
+@activity(name="charge", registry=reg, max_retries=5, min_backoff_ms=200, max_backoff_ms=30_000)
+def charge(order_id):
+    ...
+```
+
+It runs at most `max_retries + 1` times; only once the budget is exhausted is the
+step recorded FAILED and the error raised into the workflow (where it can be caught
+or fails the run). The `DramatiqDriver` delegates to Dramatiq's own Retries
+middleware — re-raising on a retryable attempt so the broker re-enqueues it with
+exponential backoff, and recording FAILED only on the final attempt (no
+dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
+(and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
 ## Recovery
 
