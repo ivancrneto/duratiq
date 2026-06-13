@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .context import WorkflowContext
-from .exceptions import ActivityFailed, Suspend
+from .exceptions import ActivityFailed, ContinueAsNew, Suspend
 from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
@@ -63,6 +63,7 @@ class Engine:
     def tick(self, run_id: str) -> None:
         scheduled: list = []
         matched = 0
+        restart = False
         with self.store.locked_run(run_id) as session:
             run = self.store.get_run(run_id, session=session)
             if run is None or run.status in _TERMINAL:
@@ -76,6 +77,11 @@ class Engine:
                 result = wf.fn(ctx, **(run.input or {}))
             except Suspend:
                 self.store.update_run(run_id, session=session, status="SUSPENDED")
+            except ContinueAsNew as can:
+                # Truncate history and reset the run to PENDING with the new input;
+                # the run restarts from seq 0 on the re-tick requested post-commit.
+                self.store.continue_as_new(run_id, new_input=can.input, session=session)
+                restart = True
             except ActivityFailed as exc:
                 self.store.update_run(
                     run_id, session=session, status="FAILED",
@@ -135,6 +141,9 @@ class Engine:
             self.driver.dispatch_activity(run_id, sa.seq, sa.name, sa.args, sa.kwargs, sa.max_retries)
         # A queued signal was consumed during this tick — replay again to advance.
         if matched:
+            self.driver.request_tick(run_id)
+        # continue-as-new reset the run to PENDING — kick off the next iteration.
+        if restart:
             self.driver.request_tick(run_id)
 
     def report_activity_result(

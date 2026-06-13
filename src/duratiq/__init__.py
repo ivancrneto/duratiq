@@ -17,13 +17,14 @@ from __future__ import annotations
 from .context import WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
-from .exceptions import ActivityFailed, DeterminismError, Suspend, WorkflowNotFound
+from .exceptions import ActivityFailed, ContinueAsNew, DeterminismError, Suspend, WorkflowNotFound
 from .registry import Activity, Registry, Workflow
 from .store import SqlStore
 
 __all__ = [
     "Activity",
     "ActivityFailed",
+    "ContinueAsNew",
     "DeterminismError",
     "Engine",
     "Registry",
