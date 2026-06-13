@@ -110,12 +110,19 @@ class SqlStore:
         name: str,
         input: dict | None,
         status: str = "SCHEDULED",
+        result: Any = None,
         session: Session | None = None,
     ) -> None:
         def _apply(s: Session) -> None:
             if s.get(WorkflowStep, (run_id, seq)) is not None:
                 return  # idempotent: this command was already scheduled on a prior tick
-            s.add(WorkflowStep(run_id=run_id, seq=seq, kind=kind, name=name, input=input, status=status))
+            s.add(
+                WorkflowStep(
+                    run_id=run_id, seq=seq, kind=kind, name=name, input=input,
+                    status=status, result=result,
+                    completed_at=utcnow() if status == "COMPLETED" else None,
+                )
+            )
 
         if session is not None:
             _apply(session)

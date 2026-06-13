@@ -6,9 +6,10 @@ messages, and all state lives in Postgres so a run resumes exactly where it left
 off after a crash.
 
 This package covers W1–W3 of DURATIQ_MVP_PLAN.md: activities, replay, memoization,
-crash recovery, durable timers (``ctx.sleep``), signals (``ctx.wait_signal``), and
-a recovery scanner for stalled runs. ``ctx.gather`` (parallel barrier) and
-per-activity retry policy are the next milestones.
+crash recovery, durable timers (``ctx.sleep``), signals (``ctx.wait_signal``),
+side effects (``ctx.side_effect``), and a recovery scanner for stalled runs.
+``ctx.gather`` (parallel barrier) and per-activity retry policy are the next
+milestones.
 """
 
 from __future__ import annotations

@@ -4,10 +4,11 @@
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
 
-> This is the **W1–W3 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
+> This is the **W1–W3** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
 > activities, replay, memoization, crash recovery, durable timers (`ctx.sleep`),
-> signals (`ctx.wait_signal`), and a recovery scanner for stalled runs. `ctx.gather`,
-> `ctx.side_effect`, and retries-policy wiring are the remaining W3–W4 items.
+> signals (`ctx.wait_signal`), side effects (`ctx.side_effect`), and a recovery
+> scanner for stalled runs. `ctx.gather` (parallel barrier) and per-activity
+> retry-policy wiring are the remaining W4 items.
 
 ## The idea
 
@@ -105,6 +106,24 @@ engine.signal(run_id, "review", {"approved": True})
 Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
+
+## Side effects
+
+Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or
+`random()` directly — replay would produce a different value. `ctx.side_effect`
+runs such a function **once** and records the result; every later replay returns
+the stored value:
+
+```python
+@workflow(name="with_id", registry=reg)
+def with_id(ctx):
+    request_id = ctx.side_effect(lambda: uuid4().hex)   # generated once, stable forever
+    return ctx.activity(charge, request_id)
+```
+
+Unlike the awaiting calls, `side_effect` doesn't suspend — the value is available
+immediately and recorded atomically with the rest of the tick. The result must be
+JSON-serialisable.
 
 ## Recovery
 

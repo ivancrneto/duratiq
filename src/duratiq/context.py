@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .exceptions import ActivityFailed, DeterminismError, Suspend
 from .registry import Activity
@@ -53,6 +53,12 @@ class ScheduledWait:
     name: str
 
 
+@dataclass
+class ScheduledSideEffect:
+    seq: int
+    value: Any
+
+
 class WorkflowContext:
     def __init__(self, run_id: str, steps: list) -> None:
         self.run_id = run_id
@@ -60,6 +66,7 @@ class WorkflowContext:
         self.scheduled: list[ScheduledActivity] = []
         self.scheduled_timers: list[ScheduledTimer] = []
         self.scheduled_waits: list[ScheduledWait] = []
+        self.scheduled_side_effects: list[ScheduledSideEffect] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -161,3 +168,29 @@ class WorkflowContext:
         # already-queued signal in the same transaction).
         self.scheduled_waits.append(ScheduledWait(seq=seq, name=name))
         raise Suspend()
+
+    def side_effect(self, fn: Callable[[], Any]) -> Any:
+        """Record a non-deterministic value once and reuse it on every replay.
+
+        Use this for anything a workflow must *not* recompute on replay —
+        ``now()``, a random id, a generated uuid. ``fn`` runs exactly once, on first
+        encounter; its (JSON-serialisable) result is stored and returned verbatim
+        thereafter. Unlike the other ``ctx`` calls this does not suspend — the value
+        is available immediately and the workflow keeps running.
+        """
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is not None:
+            if step.kind != "SIDE_EFFECT":
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, "
+                    f"but the workflow called ctx.side_effect(). Did the workflow code change?"
+                )
+            return (step.result or {}).get("value")
+
+        # Not in history: run it once now and record the value (the engine writes the
+        # COMPLETED step in this tick's transaction).
+        value = fn()
+        self.scheduled_side_effects.append(ScheduledSideEffect(seq=seq, value=value))
+        return value

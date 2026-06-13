@@ -120,6 +120,15 @@ class Engine:
             if ctx.scheduled_waits:
                 matched = self.store.match_signals(run_id, session=session)
 
+            # Record side-effect values computed during the replay. They are born
+            # COMPLETED — the value was produced in this tick, not awaited — and
+            # commit atomically with everything else so replay reuses them verbatim.
+            for se in ctx.scheduled_side_effects:
+                self.store.create_step(
+                    run_id, se.seq, kind="SIDE_EFFECT", name="side_effect",
+                    input=None, status="COMPLETED", result={"value": se.value}, session=session,
+                )
+
         # Dispatch only after the tick transaction has committed, so we never put a
         # message on the broker for a step that got rolled back.
         for sa in scheduled:
