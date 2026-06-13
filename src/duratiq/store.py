@@ -13,13 +13,14 @@ import hashlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Engine as SaEngine
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, WorkflowRun, WorkflowStep, utcnow
+from .models import Base, WorkflowRun, WorkflowStep, WorkflowTimer, utcnow
 
 
 def _advisory_key(run_id: str) -> int:
@@ -139,6 +140,52 @@ class SqlStore:
             step.result = result
             step.error = error
             step.completed_at = utcnow()
+
+    # ---------------------------------------------------------------- timers
+    def create_timer(
+        self,
+        run_id: str,
+        seq: int,
+        *,
+        fire_at: datetime,
+        session: Session | None = None,
+    ) -> None:
+        def _apply(s: Session) -> None:
+            if s.get(WorkflowTimer, (run_id, seq)) is not None:
+                return  # idempotent: already scheduled on a prior tick
+            s.add(WorkflowTimer(run_id=run_id, seq=seq, fire_at=fire_at))
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def fire_due_timers(self, *, now: datetime | None = None, limit: int = 100) -> list[str]:
+        """Deliver every timer whose deadline has elapsed.
+
+        In one transaction, marks each due timer fired and flips its TIMER step to
+        COMPLETED. The ``fired_at IS NULL`` guard makes this exactly-once. Returns
+        the run ids that advanced, so the caller can request a tick for each.
+        """
+        now = now or utcnow()
+        fired_runs: list[str] = []
+        with self.Session.begin() as s:
+            timers = s.scalars(
+                select(WorkflowTimer)
+                .where(WorkflowTimer.fired_at.is_(None), WorkflowTimer.fire_at <= now)
+                .order_by(WorkflowTimer.fire_at)
+                .limit(limit)
+            ).all()
+            for timer in timers:
+                timer.fired_at = now
+                step = s.get(WorkflowStep, (timer.run_id, timer.seq))
+                if step is not None and step.status == "SCHEDULED":
+                    step.status = "COMPLETED"
+                    step.result = {"value": None}
+                    step.completed_at = now
+                fired_runs.append(timer.run_id)
+        return fired_runs
 
     # ------------------------------------------------------------------ lock
     @contextmanager

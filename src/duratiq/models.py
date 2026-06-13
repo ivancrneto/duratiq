@@ -1,10 +1,13 @@
 """SQLAlchemy ORM models — the durable state of every workflow run.
 
-The two tables are the heart of the engine:
+The tables are the heart of the engine:
 
-* ``workflow_runs``  — one row per workflow execution.
-* ``workflow_steps`` — the event history; one row per ``ctx.*`` command, keyed by
+* ``workflow_runs``   — one row per workflow execution.
+* ``workflow_steps``  — the event history; one row per ``ctx.*`` command, keyed by
   the deterministic ``seq`` index. Replay reads these to skip completed work.
+* ``workflow_timers`` — the due-time index for ``ctx.sleep``. A timer points back
+  at its ``(run_id, seq)`` TIMER step; the timer scanner finds the ones whose
+  ``fire_at`` has elapsed, marks the step COMPLETED, and re-ticks the run.
 """
 
 from __future__ import annotations
@@ -58,3 +61,20 @@ class WorkflowStep(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowTimer(Base):
+    """The due-time index for ``ctx.sleep`` durable timers.
+
+    One row per TIMER step. ``fire_at`` is computed once at schedule time (so it
+    survives replay), and ``fired_at`` is stamped when the scanner delivers it —
+    the ``fired_at IS NULL`` guard makes firing exactly-once even if the scanner
+    overlaps with itself.
+    """
+
+    __tablename__ = "workflow_timers"
+
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

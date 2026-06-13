@@ -4,9 +4,10 @@
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
 
-> This is the **W1–W2 skeleton** from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
-> activities, replay, memoization, and crash recovery. Timers, signals, `gather`,
-> retries-policy wiring, and the admin UI are the next milestones.
+> This is the **W1–W3 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
+> activities, replay, memoization, crash recovery, and durable timers
+> (`ctx.sleep`). Signals, `gather`, retries-policy wiring, and a stale-lease
+> recovery scanner are the next milestones.
 
 ## The idea
 
@@ -68,9 +69,23 @@ pytest -q
 transaction-scoped advisory lock (`pg_advisory_xact_lock`) — the real guarantee.
 On **SQLite** it uses an in-process lock, which is single-process dev/test only.
 
+## Durable timers
+
+`ctx.sleep(duration)` parks a run until a deadline, then resumes it — durably:
+
+```python
+@workflow(name="reminder", registry=reg)
+def reminder(ctx, order_id):
+    ctx.sleep("PT10M")          # seconds (a number) or ISO-8601 ("PT10M", "P1DT6H")
+    return ctx.activity(send_followup, order_id)
+```
+
+The deadline is computed once and stored, so it survives replay and crashes. A
+periodic **timer scanner** drives it — call `engine.fire_due_timers()` from cron
+or `periodiq`; it delivers every elapsed timer and re-ticks the runs they unblock.
+Tests pass `now=...` to fast-forward without sleeping.
+
 ## What's next (from the plan)
 
-`ctx.sleep` (durable timers) + a timer scanner, `ctx.wait_signal` + signal
-delivery, `ctx.gather` (parallel barrier), per-activity retry policy wired to
-Dramatiq retries, a recovery scanner for stale leases, and a SQLAdmin run/history
-viewer.
+`ctx.wait_signal` + signal delivery, `ctx.gather` (parallel barrier), per-activity
+retry policy wired to Dramatiq retries, and a recovery scanner for stale leases.

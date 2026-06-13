@@ -3,18 +3,19 @@
 A workflow run advances one *tick* at a time. Each tick replays the orchestrator
 from the start; recorded steps return their memoized results, and the first
 not-ready point raises :class:`Suspend`, which releases the worker. A tick is
-re-requested whenever an activity completes (and later: a timer fires or a signal
+re-requested whenever an activity completes or a timer fires (and later: a signal
 arrives), driving the run forward until it returns.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 from uuid import uuid4
 
 from .context import WorkflowContext
 from .exceptions import ActivityFailed, Suspend
-from .models import WorkflowRun
+from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
 
@@ -95,6 +96,19 @@ class Engine:
                 )
             scheduled = list(ctx.scheduled)
 
+            # Record any newly-scheduled timers: a TIMER step plus a due-time index
+            # row. fire_at is computed here (not in workflow code) and persisted, so
+            # the deadline is fixed across replays and survives a crash.
+            for st in ctx.scheduled_timers:
+                self.store.create_step(
+                    run_id, st.seq, kind="TIMER", name="sleep",
+                    input={"delay_seconds": st.delay_seconds}, status="SCHEDULED", session=session,
+                )
+                self.store.create_timer(
+                    run_id, st.seq,
+                    fire_at=utcnow() + timedelta(seconds=st.delay_seconds), session=session,
+                )
+
         # Dispatch only after the tick transaction has committed, so we never put a
         # message on the broker for a step that got rolled back.
         for sa in scheduled:
@@ -109,6 +123,18 @@ class Engine:
                 error={"type": type(error).__name__, "message": str(error)},
             )
         self.driver.request_tick(run_id)
+
+    def fire_due_timers(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Deliver elapsed ``ctx.sleep`` timers and re-tick the runs they unblock.
+
+        This is the timer-scanner body: call it periodically (cron/``periodiq``).
+        Passing ``now`` lets tests fast-forward without sleeping. Returns the number
+        of runs advanced.
+        """
+        run_ids = self.store.fire_due_timers(now=now, limit=limit)
+        for run_id in run_ids:
+            self.driver.request_tick(run_id)
+        return len(run_ids)
 
     # -------------------------------------------------------------- control
     def cancel(self, run_id: str) -> bool:
