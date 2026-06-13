@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .context import WorkflowContext
+from .cron import parse_cron
 from .exceptions import ActivityFailed, Suspend
 from .models import WorkflowRun, utcnow
 from .registry import Registry
@@ -160,6 +161,55 @@ class Engine:
         for run_id in run_ids:
             self.driver.request_tick(run_id)
         return len(run_ids)
+
+    # ------------------------------------------------------------- schedules
+    def create_schedule(
+        self, name: str, cron: str, *, schedule_id: str | None = None, now: datetime | None = None, **kwargs: Any
+    ) -> str:
+        """Register a recurring start of workflow ``name`` on a cron schedule.
+
+        ``cron`` is a standard 5-field expression (``"0 9 * * 1-5"`` = 9am on
+        weekdays). ``kwargs`` are passed as the workflow input on every run. Returns a
+        schedule id (provide ``schedule_id`` to make registration idempotent — a
+        repeat call with the same id is a no-op). The schedule does nothing until
+        ``fire_due_schedules`` is called periodically.
+        """
+        self.registry.get_workflow(name)  # validate the workflow exists
+        spec = parse_cron(cron)  # validate the expression
+        sid = schedule_id or uuid4().hex
+        next_fire_at = spec.next_after(now or utcnow())
+        self.store.create_schedule(id=sid, name=name, cron=cron, input=kwargs, next_fire_at=next_fire_at)
+        return sid
+
+    def fire_due_schedules(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Start a run for every schedule that has come due, and advance each.
+
+        This is the schedule-scanner body: call it periodically (cron/``periodiq``),
+        alongside ``fire_due_timers``. Passing ``now`` lets tests fast-forward. Each
+        due schedule is claimed (its ``next_fire_at`` advanced to the next cron time)
+        before its run is started, so a missed tick is skipped rather than backfilled
+        and concurrent scanners don't double-fire. Returns the number of runs started.
+        """
+        now = now or utcnow()
+        claimed = self.store.claim_due_schedules(
+            now=now, limit=limit, compute_next=lambda cron, n: parse_cron(cron).next_after(n)
+        )
+        for schedule_id, name, input in claimed:
+            run_id = self.start(name, **input)
+            self.store.set_schedule_last_run(schedule_id, run_id)
+        return len(claimed)
+
+    def pause_schedule(self, schedule_id: str) -> bool:
+        """Stop a schedule from firing without deleting it. Returns ``False`` if absent."""
+        return self.store.set_schedule_active(schedule_id, False)
+
+    def resume_schedule(self, schedule_id: str) -> bool:
+        """Re-enable a paused schedule. Returns ``False`` if absent."""
+        return self.store.set_schedule_active(schedule_id, True)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        """Remove a schedule entirely. Returns ``False`` if absent."""
+        return self.store.delete_schedule(schedule_id)
 
     def recover_stalled(self, *, older_than_seconds: float = 60, now: datetime | None = None, limit: int = 100) -> int:
         """Re-tick non-terminal runs that have been idle longer than the threshold.
