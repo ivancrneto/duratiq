@@ -178,7 +178,31 @@ idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
 re-suspends. (Lost *activity* messages are recovered by the broker's own
 redelivery.)
 
+## Observability
+
+Pass a `listener` to the `Engine` to receive lifecycle events as runs and activities
+change state — the seam for metrics, structured logs, and tracing, with no
+dependency baked in:
+
+```python
+from duratiq import Engine, WorkflowEvent
+
+def on_event(e: WorkflowEvent):
+    log.info("duratiq", type=e.type, run_id=e.run_id, name=e.name)
+    # or: increment a Prometheus counter, open an OpenTelemetry span, ...
+
+engine = Engine(reg, store, listener=on_event)
+```
+
+Events: `run.started`, `run.suspended`, `run.completed` (carries `result`),
+`run.failed` / `activity.failed` (carry `error`), `run.cancelled`, and
+`activity.scheduled` / `activity.completed` (carry `seq`, `attempt`). They're emitted
+**after** the state they describe is committed, and a listener that raises is
+swallowed — observability never breaks a run.
+
 ## What's next (from the plan)
 
-`ctx.gather` (parallel barrier) and per-activity retry policy wired to Dramatiq
-retries.
+Remaining fast-follow items: child workflows (`ctx.child_workflow`),
+`continue-as-new`, `ctx.patched` versioning, recurring cron schedules, and
+exactly-once activity dedup. Cross-process trace-context propagation (OpenTelemetry)
+builds on the listener hook above.

@@ -17,6 +17,7 @@ from __future__ import annotations
 from .context import WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
+from .events import WorkflowEvent
 from .exceptions import ActivityFailed, DeterminismError, Suspend, WorkflowNotFound
 from .registry import Activity, Registry, Workflow
 from .store import SqlStore
@@ -31,6 +32,7 @@ __all__ = [
     "Suspend",
     "Workflow",
     "WorkflowContext",
+    "WorkflowEvent",
     "WorkflowNotFound",
     "activity",
     "default_registry",
