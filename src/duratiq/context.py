@@ -59,6 +59,19 @@ class ScheduledSideEffect:
     value: Any
 
 
+@dataclass
+class DeferredCall:
+    """An activity call built by :meth:`WorkflowContext.defer` but not yet started.
+
+    Deferring is what lets ``ctx.gather`` collect several calls and launch them
+    together — a plain ``ctx.activity`` would suspend on the first one.
+    """
+
+    activity: Activity
+    args: tuple
+    kwargs: dict
+
+
 class WorkflowContext:
     def __init__(self, run_id: str, steps: list) -> None:
         self.run_id = run_id
@@ -194,3 +207,61 @@ class WorkflowContext:
         value = fn()
         self.scheduled_side_effects.append(ScheduledSideEffect(seq=seq, value=value))
         return value
+
+    def defer(self, activity: Activity, *args: Any, **kwargs: Any) -> DeferredCall:
+        """Build an activity call without starting it, for use with :meth:`gather`.
+
+        Calling ``defer`` has no effect on its own — it just captures the activity
+        and arguments. Pass the result to ``ctx.gather`` to launch it in parallel
+        with others.
+        """
+        return DeferredCall(activity=activity, args=args, kwargs=kwargs)
+
+    def gather(self, *calls: DeferredCall) -> list:
+        """Run several deferred activities in parallel and return their results.
+
+        All branches are launched together on first encounter; the workflow then
+        suspends until **every** branch has completed, at which point their results
+        are returned in call order. If any branch fails, ``gather`` fails fast with
+        that error (the others still finish but their results are discarded).
+        """
+        if not calls:
+            return []
+
+        results: list = [None] * len(calls)
+        all_done = True
+        for i, call in enumerate(calls):
+            seq = self._next_seq()
+            step = self._history.get(seq)
+
+            if step is None:
+                # First encounter: schedule this branch. The engine dispatches every
+                # entry in ``scheduled`` after commit, so all branches start at once.
+                all_done = False
+                self.scheduled.append(
+                    ScheduledActivity(
+                        seq=seq,
+                        name=call.activity.name,
+                        args=list(call.args),
+                        kwargs=dict(call.kwargs),
+                        max_retries=call.activity.max_retries,
+                    )
+                )
+                continue
+
+            if step.kind != "ACTIVITY" or step.name != call.activity.name:
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history recorded {step.kind} "
+                    f"{step.name!r}, but gather branch {i} called activity "
+                    f"{call.activity.name!r}. Did the workflow code change?"
+                )
+            if step.status == "COMPLETED":
+                results[i] = (step.result or {}).get("value")
+            elif step.status == "FAILED":
+                raise ActivityFailed(call.activity.name, step.error)
+            else:  # SCHEDULED — this branch is still in flight.
+                all_done = False
+
+        if all_done:
+            return results
+        raise Suspend()

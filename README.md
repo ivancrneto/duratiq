@@ -4,11 +4,11 @@
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
 
-> This is the **W1–W3** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
+> This is the **W1–W4 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
 > activities, replay, memoization, crash recovery, durable timers (`ctx.sleep`),
-> signals (`ctx.wait_signal`), side effects (`ctx.side_effect`), and a recovery
-> scanner for stalled runs. `ctx.gather` (parallel barrier) and per-activity
-> retry-policy wiring are the remaining W4 items.
+> signals (`ctx.wait_signal`), side effects (`ctx.side_effect`), a parallel barrier
+> (`ctx.gather`), and a recovery scanner for stalled runs. Per-activity
+> retry-policy wiring is the remaining W4 item.
 
 ## The idea
 
@@ -124,6 +124,28 @@ def with_id(ctx):
 Unlike the awaiting calls, `side_effect` doesn't suspend — the value is available
 immediately and recorded atomically with the rest of the tick. The result must be
 JSON-serialisable.
+
+## Parallel fan-out
+
+`ctx.gather` runs independent activities at once and waits for all of them. Build
+each branch with `ctx.defer` (which captures the call without starting it), then
+hand them to `gather`:
+
+```python
+@workflow(name="fulfil", registry=reg)
+def fulfil(ctx, order_id):
+    receipt, reservation = ctx.gather(
+        ctx.defer(make_receipt, order_id),
+        ctx.defer(reserve_inventory, order_id),
+    )
+    return {"receipt": receipt, "reservation": reservation}
+```
+
+All branches are dispatched in a single tick, so they run concurrently; the
+workflow resumes only once every branch has completed, and results come back in
+call order. If a branch fails, `gather` fails fast with that error. (A plain
+`ctx.activity` can't be nested in `gather` — it would suspend on the first call;
+that's why `defer` exists.)
 
 ## Recovery
 

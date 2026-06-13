@@ -5,11 +5,11 @@ workflows are deterministic orchestrator functions, activities are Dramatiq
 messages, and all state lives in Postgres so a run resumes exactly where it left
 off after a crash.
 
-This package covers W1–W3 of DURATIQ_MVP_PLAN.md: activities, replay, memoization,
-crash recovery, durable timers (``ctx.sleep``), signals (``ctx.wait_signal``),
-side effects (``ctx.side_effect``), and a recovery scanner for stalled runs.
-``ctx.gather`` (parallel barrier) and per-activity retry policy are the next
-milestones.
+This package covers W1–W4 (partial) of DURATIQ_MVP_PLAN.md: activities, replay,
+memoization, crash recovery, durable timers (``ctx.sleep``), signals
+(``ctx.wait_signal``), side effects (``ctx.side_effect``), a parallel barrier
+(``ctx.gather``), and a recovery scanner for stalled runs. Per-activity retry
+policy is the next milestone.
 """
 
 from __future__ import annotations
