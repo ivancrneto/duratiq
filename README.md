@@ -8,8 +8,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and a recovery
-> scanner for stalled runs. Fast-follow items (child workflows, `continue-as-new`,
-> `ctx.patched` versioning) remain.
+> scanner for stalled runs, plus `ctx.patched` versioning for safely evolving
+> deployed workflow code. Fast-follow items (child workflows, `continue-as-new`)
+> remain.
 
 ## The idea
 
@@ -167,6 +168,30 @@ exponential backoff, and recording FAILED only on the final attempt (no
 dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
 (and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
+## Versioning with patches
+
+Because replay matches recorded history by position, changing a deployed workflow's
+code can diverge its in-flight runs (`DeterminismError`). `ctx.patched` is the safe
+way to ship a change: wrap the new behaviour, leave the old in the `else`.
+
+```python
+@workflow(name="checkout", registry=reg)
+def checkout(ctx, order_id):
+    payment = ctx.activity(charge_card, order_id)
+    if ctx.patched("send-receipt-v2"):
+        ctx.activity(send_receipt_v2, order_id)   # new runs take this
+    else:
+        ctx.activity(send_receipt, order_id)      # runs that predate the patch keep this
+    return payment
+```
+
+The decision is fixed per call site and replayed stably. A **new run** records a
+patch marker and returns `True`; a run that **already executed past this point**
+under the old code has a real command where the marker would sit, so `patched`
+returns `False` and — without consuming a position — lets the old branch realign
+with history. Once every pre-patch run has drained you can delete the old branch;
+removing the `patched` call entirely is safe only after that.
+
 ## Recovery
 
 A tick is atomic under a per-run advisory lock, so a worker that dies mid-tick
@@ -180,5 +205,6 @@ redelivery.)
 
 ## What's next (from the plan)
 
-`ctx.gather` (parallel barrier) and per-activity retry policy wired to Dramatiq
-retries.
+Remaining fast-follow items: child workflows (`ctx.child_workflow`),
+`continue-as-new` (history truncation for long loops), cron schedules, and an
+exactly-once activity dedup table.

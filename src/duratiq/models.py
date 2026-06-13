@@ -57,7 +57,7 @@ class WorkflowStep(Base):
 
     run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), primary_key=True)
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER
+    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER | PATCH
     kind: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
     input: Mapped[Any] = mapped_column(JSON, nullable=True)

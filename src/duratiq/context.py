@@ -60,6 +60,12 @@ class ScheduledSideEffect:
 
 
 @dataclass
+class ScheduledPatch:
+    seq: int
+    patch_id: str
+
+
+@dataclass
 class DeferredCall:
     """An activity call built by :meth:`WorkflowContext.defer` but not yet started.
 
@@ -80,6 +86,7 @@ class WorkflowContext:
         self.scheduled_timers: list[ScheduledTimer] = []
         self.scheduled_waits: list[ScheduledWait] = []
         self.scheduled_side_effects: list[ScheduledSideEffect] = []
+        self.scheduled_patches: list[ScheduledPatch] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -207,6 +214,50 @@ class WorkflowContext:
         value = fn()
         self.scheduled_side_effects.append(ScheduledSideEffect(seq=seq, value=value))
         return value
+
+    def patched(self, patch_id: str) -> bool:
+        """Gate a change to workflow code so in-flight runs stay deterministic.
+
+        Wrap new behaviour in ``if ctx.patched("my-change"):`` and leave the old
+        behaviour in the ``else``. The return value is decided once per call site and
+        replayed stably:
+
+        * **New runs** (reaching this point for the first time) record a patch marker
+          and take the new path — ``patched`` returns ``True``.
+        * **Runs already past this point** under the old code — i.e. history holds a
+          real command where the marker would sit — never recorded a marker, so
+          ``patched`` returns ``False`` and they keep taking the old path. Crucially
+          it does *not* consume a ``seq`` in that case, so the old branch's commands
+          line up with the recorded history exactly as before.
+
+        This is the safe way to evolve a deployed workflow without a `DeterminismError`
+        on its in-flight runs. Once every pre-patch run has drained you can delete the
+        old branch (and eventually the ``patched`` call); removing it earlier risks
+        diverging a run that still needs the old path.
+        """
+        seq = self._seq
+        step = self._history.get(seq)
+
+        if step is not None and step.kind == "PATCH":
+            if step.name != patch_id:
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history recorded patch {step.name!r}, "
+                    f"but the workflow checked ctx.patched({patch_id!r}). Did the patch order change?"
+                )
+            self._seq += 1  # the marker occupies this seq — advance past it
+            return True
+
+        if step is not None:
+            # A real command sits here: this run executed past this point under the
+            # pre-patch code. Take the old path and leave seq untouched so that
+            # branch's commands realign with the recorded history.
+            return False
+
+        # Frontier — first execution reaching this point. Record a marker, take the
+        # new path. (Committed COMPLETED in this tick, like a side effect.)
+        self._seq += 1
+        self.scheduled_patches.append(ScheduledPatch(seq=seq, patch_id=patch_id))
+        return True
 
     def defer(self, activity: Activity, *args: Any, **kwargs: Any) -> DeferredCall:
         """Build an activity call without starting it, for use with :meth:`gather`.

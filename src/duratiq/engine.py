@@ -129,6 +129,16 @@ class Engine:
                     input=None, status="COMPLETED", result={"value": se.value}, session=session,
                 )
 
+            # Record patch markers from ctx.patched(). Like side effects they are born
+            # COMPLETED — the decision was made in this tick — so replay returns True
+            # at this seq forever after, while runs that predate the patch (which have
+            # no marker here) keep returning False.
+            for sp in ctx.scheduled_patches:
+                self.store.create_step(
+                    run_id, sp.seq, kind="PATCH", name=sp.patch_id,
+                    input=None, status="COMPLETED", result={"value": True}, session=session,
+                )
+
         # Dispatch only after the tick transaction has committed, so we never put a
         # message on the broker for a step that got rolled back.
         for sa in scheduled:
