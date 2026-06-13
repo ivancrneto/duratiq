@@ -72,6 +72,44 @@ class SqlStore:
         with self.Session() as s:
             return s.scalar(select(WorkflowRun).where(WorkflowRun.idempotency_key == key))
 
+    @staticmethod
+    def _runs_filter(query, status: Any, name: str | None):
+        if status is not None:
+            statuses = [status] if isinstance(status, str) else list(status)
+            query = query.where(WorkflowRun.status.in_(statuses))
+        if name is not None:
+            query = query.where(WorkflowRun.name == name)
+        return query
+
+    def list_runs(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        newest_first: bool = True,
+    ) -> list[WorkflowRun]:
+        """Return runs matching the filters, newest first by default.
+
+        ``status`` may be a single status or a list. Ordered by ``created_at`` (then
+        ``id`` for a stable tiebreak), paginated by ``limit``/``offset``.
+        """
+        order_col = WorkflowRun.created_at.desc() if newest_first else WorkflowRun.created_at.asc()
+        id_col = WorkflowRun.id.desc() if newest_first else WorkflowRun.id.asc()
+        with self.Session() as s:
+            query = self._runs_filter(select(WorkflowRun), status, name)
+            query = query.order_by(order_col, id_col).limit(limit).offset(offset)
+            return list(s.scalars(query))
+
+    def count_runs(self, *, status: "str | list[str] | None" = None, name: str | None = None) -> int:
+        """Count runs matching the same filters as :meth:`list_runs` (ignores paging)."""
+        from sqlalchemy import func
+
+        with self.Session() as s:
+            query = self._runs_filter(select(func.count()).select_from(WorkflowRun), status, name)
+            return int(s.scalar(query) or 0)
+
     def update_run(self, run_id: str, *, session: Session | None = None, **fields: Any) -> None:
         def _apply(s: Session) -> None:
             run = s.get(WorkflowRun, run_id)
