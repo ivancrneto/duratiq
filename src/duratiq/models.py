@@ -18,8 +18,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from .codec import CodecJSON
 
 
 def utcnow() -> datetime:
@@ -36,11 +38,11 @@ class WorkflowRun(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1)
-    input: Mapped[Any] = mapped_column(JSON, default=dict)
+    input: Mapped[Any] = mapped_column(CodecJSON, default=dict)
     # PENDING | RUNNING | SUSPENDED | COMPLETED | FAILED | CANCELLED
     status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
-    result: Mapped[Any] = mapped_column(JSON, nullable=True)
-    error: Mapped[Any] = mapped_column(JSON, nullable=True)
+    result: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    error: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     # Child-workflow linkage: a run started via ``ctx.child_workflow`` points back at
     # the parent run and the parent's CHILD_WORKFLOW step seq. When the child reaches
@@ -69,11 +71,11 @@ class WorkflowStep(Base):
     # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER | CHILD_WORKFLOW
     kind: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
-    input: Mapped[Any] = mapped_column(JSON, nullable=True)
+    input: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     # SCHEDULED | COMPLETED | FAILED
     status: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
-    result: Mapped[Any] = mapped_column(JSON, nullable=True)
-    error: Mapped[Any] = mapped_column(JSON, nullable=True)
+    result: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    error: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -109,6 +111,6 @@ class WorkflowSignal(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
-    payload: Mapped[Any] = mapped_column(JSON, nullable=True)
+    payload: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)

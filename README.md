@@ -201,6 +201,37 @@ idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
 re-suspends. (Lost *activity* messages are recovered by the broker's own
 redelivery.)
 
+## Payload codec
+
+Every workflow input, result, step payload, and signal is memoized as JSON in
+Postgres. Large payloads bloat that history, and some shouldn't live in the database
+at all. A **payload codec** is the seam to intervene — compress them, or offload big
+blobs to S3 and store only a reference — applied transparently at the storage layer,
+so neither the engine nor workflow code changes:
+
+```python
+from duratiq import PayloadCodec, set_payload_codec
+
+class S3OffloadingCodec:
+    def encode(self, value):                 # on the way into the DB
+        blob = json.dumps(value).encode()
+        if len(blob) < 8_000:
+            return value                      # small: store inline
+        key = s3_put(blob)
+        return {"__s3__": key}                # large: store a reference
+    def decode(self, value):                  # on the way back out
+        if isinstance(value, dict) and "__s3__" in value:
+            return json.loads(s3_get(value["__s3__"]))
+        return value
+
+set_payload_codec(S3OffloadingCodec())        # once, at startup
+```
+
+The codec must round-trip (`decode(encode(v)) == v`) and `encode` must return
+something JSON-serialisable. The default is a pass-through `IdentityCodec`, so
+nothing changes until you install one. It's process-global — set it once before
+starting the engine.
+
 ## What's next (from the plan)
 
 The fast-follow items still open: `continue-as-new` (history truncation for long
