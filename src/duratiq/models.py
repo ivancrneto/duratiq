@@ -42,6 +42,15 @@ class WorkflowRun(Base):
     result: Mapped[Any] = mapped_column(JSON, nullable=True)
     error: Mapped[Any] = mapped_column(JSON, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Child-workflow linkage: a run started via ``ctx.child_workflow`` points back at
+    # the parent run and the parent's CHILD_WORKFLOW step seq. When the child reaches
+    # a terminal state the engine completes that step and re-ticks the parent. Both
+    # NULL for a top-level run. ``(parent_run_id, parent_seq)`` is effectively unique —
+    # it is how the engine finds an already-started child and avoids duplicating it.
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workflow_runs.id"), nullable=True, index=True
+    )
+    parent_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Reserved for a future leased-tick model. Unused today: a tick is atomic under
     # a transaction-scoped advisory lock, so a worker dying mid-tick rolls back
     # cleanly — there is no partial state to lease. Recovery instead re-ticks stale
@@ -57,7 +66,7 @@ class WorkflowStep(Base):
 
     run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), primary_key=True)
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER
+    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER | CHILD_WORKFLOW
     kind: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
     input: Mapped[Any] = mapped_column(JSON, nullable=True)

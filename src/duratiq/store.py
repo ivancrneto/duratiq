@@ -48,6 +48,8 @@ class SqlStore:
         version: int,
         input: dict,
         idempotency_key: str | None = None,
+        parent_run_id: str | None = None,
+        parent_seq: int | None = None,
     ) -> str:
         with self.Session.begin() as session:
             session.add(
@@ -58,9 +60,25 @@ class SqlStore:
                     input=input,
                     status="PENDING",
                     idempotency_key=idempotency_key,
+                    parent_run_id=parent_run_id,
+                    parent_seq=parent_seq,
                 )
             )
         return run_id
+
+    def find_child_run(self, parent_run_id: str, parent_seq: int) -> WorkflowRun | None:
+        """Return the child run started by a parent's CHILD_WORKFLOW step, if any.
+
+        Lets the engine make child-start idempotent: a re-tick that would otherwise
+        start the same child twice finds the existing run instead.
+        """
+        with self.Session() as s:
+            return s.scalar(
+                select(WorkflowRun).where(
+                    WorkflowRun.parent_run_id == parent_run_id,
+                    WorkflowRun.parent_seq == parent_seq,
+                )
+            )
 
     def get_run(self, run_id: str, *, session: Session | None = None) -> WorkflowRun | None:
         if session is not None:
