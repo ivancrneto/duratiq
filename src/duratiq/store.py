@@ -187,6 +187,28 @@ class SqlStore:
                 fired_runs.append(timer.run_id)
         return fired_runs
 
+    # -------------------------------------------------------------- recovery
+    def find_stalled_runs(self, *, older_than: datetime, limit: int = 100) -> list[str]:
+        """Return ids of non-terminal runs untouched since ``older_than``.
+
+        A run rests in PENDING or SUSPENDED between ticks; if the tick that should
+        have advanced it was lost (the worker died after committing a step but
+        before its re-tick was processed), nothing else will move it. The recovery
+        scanner re-ticks these — safe because replay is idempotent.
+        """
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id)
+                    .where(
+                        WorkflowRun.status.in_(("PENDING", "SUSPENDED")),
+                        WorkflowRun.updated_at <= older_than,
+                    )
+                    .order_by(WorkflowRun.updated_at)
+                    .limit(limit)
+                )
+            )
+
     # --------------------------------------------------------------- signals
     def add_signal(
         self,

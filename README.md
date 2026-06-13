@@ -6,8 +6,8 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 
 > This is the **W1–W3 (partial)** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md):
 > activities, replay, memoization, crash recovery, durable timers (`ctx.sleep`),
-> and signals (`ctx.wait_signal`). `gather`, retries-policy wiring, and a
-> stale-lease recovery scanner are the next milestones.
+> signals (`ctx.wait_signal`), and a recovery scanner for stalled runs. `ctx.gather`,
+> `ctx.side_effect`, and retries-policy wiring are the remaining W3–W4 items.
 
 ## The idea
 
@@ -106,7 +106,18 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
+## Recovery
+
+A tick is atomic under a per-run advisory lock, so a worker that dies mid-tick
+rolls back cleanly. The residual risk is a *lost tick*: a worker commits a step (a
+matched signal, a fired timer) and dies before its follow-up re-tick runs, leaving
+the run parked with nobody to advance it. `engine.recover_stalled()` is the
+backstop — call it periodically (cron/`periodiq`); it re-ticks non-terminal runs
+idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
+re-suspends. (Lost *activity* messages are recovered by the broker's own
+redelivery.)
+
 ## What's next (from the plan)
 
-`ctx.gather` (parallel barrier), per-activity retry policy wired to Dramatiq
-retries, and a recovery scanner for stale leases.
+`ctx.gather` (parallel barrier) and per-activity retry policy wired to Dramatiq
+retries.

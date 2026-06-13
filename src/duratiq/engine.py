@@ -150,6 +150,22 @@ class Engine:
             self.driver.request_tick(run_id)
         return len(run_ids)
 
+    def recover_stalled(self, *, older_than_seconds: float = 60, now: datetime | None = None, limit: int = 100) -> int:
+        """Re-tick non-terminal runs that have been idle longer than the threshold.
+
+        This is the recovery-scanner body: call it periodically (cron/``periodiq``).
+        It backstops *lost ticks* — a timer fired or signal matched, but the worker
+        died before its re-tick ran — by re-ticking stale runs; replay is idempotent
+        so a genuinely-waiting run just re-suspends. (Lost *activity* messages are
+        recovered by the broker's own redelivery, not here.) The threshold keeps the
+        scan from racing runs that are actively progressing. Returns runs re-ticked.
+        """
+        cutoff = (now or utcnow()) - timedelta(seconds=older_than_seconds)
+        run_ids = self.store.find_stalled_runs(older_than=cutoff, limit=limit)
+        for run_id in run_ids:
+            self.driver.request_tick(run_id)
+        return len(run_ids)
+
     def signal(self, run_id: str, name: str, payload: Any = None) -> bool:
         """Deliver a signal to a run, waking any matching ``ctx.wait_signal``.
 

@@ -42,6 +42,10 @@ class WorkflowRun(Base):
     result: Mapped[Any] = mapped_column(JSON, nullable=True)
     error: Mapped[Any] = mapped_column(JSON, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Reserved for a future leased-tick model. Unused today: a tick is atomic under
+    # a transaction-scoped advisory lock, so a worker dying mid-tick rolls back
+    # cleanly — there is no partial state to lease. Recovery instead re-ticks stale
+    # runs (see Engine.recover_stalled), keying off updated_at.
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
