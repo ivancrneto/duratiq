@@ -14,6 +14,7 @@ Fast-follow items (child workflows, continue-as-new, ctx.patched versioning) rem
 
 from __future__ import annotations
 
+from .activity_runtime import ActivityInfo, activity_info, run_once
 from .context import WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
@@ -24,6 +25,7 @@ from .store import SqlStore
 __all__ = [
     "Activity",
     "ActivityFailed",
+    "ActivityInfo",
     "DeterminismError",
     "Engine",
     "Registry",
@@ -33,6 +35,8 @@ __all__ = [
     "WorkflowContext",
     "WorkflowNotFound",
     "activity",
+    "activity_info",
     "default_registry",
+    "run_once",
     "workflow",
 ]

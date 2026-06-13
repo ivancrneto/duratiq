@@ -8,8 +8,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and a recovery
-> scanner for stalled runs. Fast-follow items (child workflows, `continue-as-new`,
-> `ctx.patched` versioning) remain.
+> scanner for stalled runs, plus idempotent activities (`activity_info` /
+> `run_once`). Fast-follow items (child workflows, `continue-as-new`, `ctx.patched`
+> versioning) remain.
 
 ## The idea
 
@@ -167,6 +168,37 @@ exponential backoff, and recording FAILED only on the final attempt (no
 dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
 (and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
+## Idempotent activities
+
+Activities are **at-least-once** — a retry, a broker redelivery, or a crash can run
+one more than once — so they must be idempotent. Two runtime helpers (importable
+inside any activity body) make that practical:
+
+```python
+from duratiq import activity, activity_info, run_once
+
+@activity(name="charge", registry=reg)
+def charge(order_id):
+    info = activity_info()                       # stable id for THIS invocation
+    return run_once(
+        info.idempotency_key,                    # f"{run_id}:{seq}" — same across retries
+        lambda: stripe.charge(order_id, idempotency_key=info.idempotency_key),
+    )
+```
+
+- **`activity_info()`** returns the current activity's `run_id`, `seq`, and a stable
+  `idempotency_key` (`run_id:seq`) that doesn't change across retries, redelivery, or
+  replay — pass it to an idempotent external API for true end-to-end exactly-once.
+- **`run_once(key, fn)`** records `fn`'s result in a dedup table the first time and
+  returns the stored value on every later call with the same key. So if an activity
+  charges a card and then a *later* step in the same activity fails, the retry skips
+  the charge and reuses the recorded result.
+
+`run_once` dedupes re-execution within Duratiq's control (retries, sequential
+redelivery). As with Temporal, a crash *between* the external effect landing and the
+dedup row committing can still re-run it — which is exactly why the
+`idempotency_key` exists: hand it to the downstream system for the hard guarantee.
+
 ## Recovery
 
 A tick is atomic under a per-run advisory lock, so a worker that dies mid-tick
@@ -180,5 +212,6 @@ redelivery.)
 
 ## What's next (from the plan)
 
-`ctx.gather` (parallel barrier) and per-activity retry policy wired to Dramatiq
-retries.
+Remaining fast-follow items: child workflows (`ctx.child_workflow`),
+`continue-as-new` (history truncation for long loops), `ctx.patched` versioning, and
+recurring cron schedules.

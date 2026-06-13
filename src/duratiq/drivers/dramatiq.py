@@ -17,6 +17,7 @@ from __future__ import annotations
 import dramatiq
 from dramatiq.middleware import CurrentMessage
 
+from ..activity_runtime import activity_scope
 from ..engine import Engine
 
 
@@ -53,7 +54,8 @@ class DramatiqDriver:
         retries = (message.options.get("retries") or 0) if message is not None else 0
         max_retries = (message.options.get("max_retries") or 0) if message is not None else 0
         try:
-            result = activity.fn(*args, **kwargs)
+            with activity_scope(run_id, seq, self.engine.store):
+                result = activity.fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - activity may raise anything
             if retries >= max_retries:
                 # Budget exhausted: record FAILED and return normally so Dramatiq
