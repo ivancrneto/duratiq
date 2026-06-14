@@ -58,8 +58,7 @@ def main() -> None:
     # After the first tick, all three branches are queued together — before any runs.
     driver.step()
     pending = [item for item in driver.queue if item[0] == "activity"]
-    print(f"\nafter one tick, {len(pending)} activities are queued in parallel "
-          f"(run is {engine.get(run_id).status})\n")
+    print(f"\nafter one tick, {len(pending)} activities are queued in parallel (run is {engine.get(run_id).status})\n")
 
     driver.run_until_idle()
     run = engine.get(run_id)
