@@ -202,6 +202,12 @@ class SqlStore:
         with self.Session() as s:
             return _query(s)
 
+    def get_step(self, run_id: str, seq: int, *, session: Session | None = None) -> WorkflowStep | None:
+        if session is not None:
+            return session.get(WorkflowStep, (run_id, seq))
+        with self.Session() as s:
+            return s.get(WorkflowStep, (run_id, seq))
+
     def create_step(
         self,
         run_id: str,
@@ -335,6 +341,30 @@ class SqlStore:
                     step.completed_at = now
                 fired_runs.append(timer.run_id)
         return fired_runs
+
+    def cancel_timer(self, run_id: str, seq: int, *, session: Session) -> None:
+        """Cancel a still-pending timer (the losing side of a won ``wait_signal`` race).
+
+        Marks the TIMER step CANCELLED and removes its due-time row so the timer
+        scanner won't fire it. A no-op if the timer already fired."""
+        step = session.get(WorkflowStep, (run_id, seq))
+        if step is not None and step.status == "SCHEDULED":
+            step.status = "CANCELLED"
+            step.completed_at = utcnow()
+        timer = session.get(WorkflowTimer, (run_id, seq))
+        if timer is not None:
+            session.delete(timer)
+
+    def cancel_wait(self, run_id: str, seq: int, *, session: Session) -> None:
+        """Cancel a still-pending signal wait (abandoned after its timeout fired).
+
+        Marks the SIGNAL_WAIT step CANCELLED so ``match_signals`` — which only pairs
+        SCHEDULED waits — leaves a late signal queued for a later wait instead of
+        silently consuming it here."""
+        step = session.get(WorkflowStep, (run_id, seq))
+        if step is not None and step.status == "SCHEDULED":
+            step.status = "CANCELLED"
+            step.completed_at = utcnow()
 
     # -------------------------------------------------------------- recovery
     def find_stalled_runs(self, *, older_than: datetime, limit: int = 100) -> list[str]:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from .activity_runtime import ActivityInfo, activity_info, run_once
 from .codec import IdentityCodec, PayloadCodec, get_payload_codec, set_payload_codec
-from .context import WorkflowContext
+from .context import TIMEOUT, WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
 from .events import WorkflowEvent
@@ -27,6 +27,7 @@ from .scanner import Scanner
 from .store import SqlStore
 
 __all__ = [
+    "TIMEOUT",
     "Activity",
     "ActivityFailed",
     "ActivityInfo",

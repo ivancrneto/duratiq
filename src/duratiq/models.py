@@ -78,7 +78,7 @@ class WorkflowStep(Base):
     kind: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
     input: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
-    # SCHEDULED | COMPLETED | FAILED
+    # SCHEDULED | COMPLETED | FAILED | CANCELLED (the loser of a wait_signal timeout race)
     status: Mapped[str] = mapped_column(String(20), default="SCHEDULED")
     result: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     error: Mapped[Any] = mapped_column(CodecJSON, nullable=True)

@@ -183,6 +183,27 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
+**Wait with a timeout.** `ctx.wait_signal(name, timeout=...)` (seconds, or an
+ISO-8601 string like `"PT24H"`) races the signal against a durable timer — the "wait
+for approval **or** give up after a day" pattern:
+
+```python
+@workflow(name="approval", registry=reg)
+def approval(ctx, order_id):
+    decision = ctx.wait_signal("review", timeout="PT24H")
+    if decision is TIMEOUT:           # the sentinel, imported from duratiq
+        return auto_reject(order_id)
+    return fulfil(order_id) if decision["approved"] else reject(order_id)
+```
+
+If the signal arrives first you get its payload; if the timer fires first you get
+the `TIMEOUT` sentinel (a distinct object — not `None` — so a `None` payload stays
+unambiguous; test with `is TIMEOUT`). Whichever loses is **cancelled** in the same
+tick: the timer is dropped if the signal won, and the wait is dropped if it timed
+out — so a signal that lands *after* the timeout isn't silently swallowed by the
+abandoned wait but left queued for the next one. The decision is recorded durably, so
+replay and crash recovery resolve to the same outcome.
+
 **Signal-with-start.** `engine.signal_with_start(name, signal=..., payload=...,
 idempotency_key=...)` delivers a signal to a run, starting it first if it doesn't
 exist yet. Dedupe on `idempotency_key`: the first call starts the workflow, every
