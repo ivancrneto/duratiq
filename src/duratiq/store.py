@@ -244,12 +244,6 @@ class SqlStore:
             with self.Session.begin() as s:
                 _apply(s)
 
-    def get_step(self, run_id: str, seq: int, *, session: Session | None = None) -> WorkflowStep | None:
-        if session is not None:
-            return session.get(WorkflowStep, (run_id, seq))
-        with self.Session() as s:
-            return s.get(WorkflowStep, (run_id, seq))
-
     def complete_step(
         self,
         run_id: str,
