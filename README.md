@@ -247,6 +247,40 @@ far. Registering a handler consumes no `seq` and never suspends, so it's free to
 at the top of a workflow. Queries work on completed runs too (the handlers re-register
 on the replay-to-completion). An unknown handler raises `QueryNotFound`.
 
+## Updates
+
+A query reads; an **update** *mutates* and returns a result — a synchronous, validated
+request into a running workflow:
+
+```python
+@workflow(name="account", registry=reg)
+def account(ctx):
+    balance = [0]
+    def deposit(amount):
+        balance[0] += amount
+        return balance[0]                       # returned to the caller
+    def validate(amount):
+        if amount <= 0:
+            raise ValueError("must be positive")
+    ctx.set_update_handler("deposit", deposit)
+    ctx.set_update_validator("deposit", validate)
+    while True:
+        ctx.wait_update()                       # apply one update per loop, in arrival order
+
+uid = engine.update(run_id, "deposit", 100)     # validated, queued, applied on the next tick
+engine.get_update_result(run_id, uid)            # -> the handler's return value (100)
+```
+
+`engine.update` first runs the registered **validator** read-only — if it raises, the
+update is rejected and nothing is recorded (*validate before mutate*). Otherwise it's
+queued and the workflow consumes it at a `ctx.wait_update()` point, where the
+registered handler runs: it mutates the workflow's state and returns a value. Like a
+query handler it's re-run on every replay (so it must be deterministic — mutate state
+and return, no I/O), and its result is recorded on a `workflow_updates` row for the
+caller. The tick is asynchronous like everything else: `update` returns an id, and
+`get_update_result` returns the value once applied (or `UPDATE_PENDING` until then,
+or raises `UpdateFailed` if the handler raised). Updating a terminal run raises.
+
 ## Side effects
 
 Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or
