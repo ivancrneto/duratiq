@@ -15,11 +15,12 @@ versioning) remain.
 
 from __future__ import annotations
 
+from .codec import IdentityCodec, PayloadCodec, get_payload_codec, set_payload_codec
 from .context import WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
 from .events import WorkflowEvent
-from .exceptions import ActivityFailed, ChildWorkflowFailed, DeterminismError, Suspend, WorkflowNotFound
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend, WorkflowNotFound
 from .registry import Activity, Registry, Workflow
 from .store import SqlStore
 
@@ -27,8 +28,11 @@ __all__ = [
     "Activity",
     "ActivityFailed",
     "ChildWorkflowFailed",
+    "ContinueAsNew",
     "DeterminismError",
     "Engine",
+    "IdentityCodec",
+    "PayloadCodec",
     "Registry",
     "SqlStore",
     "Suspend",
@@ -38,5 +42,7 @@ __all__ = [
     "WorkflowNotFound",
     "activity",
     "default_registry",
+    "get_payload_codec",
+    "set_payload_codec",
     "workflow",
 ]
