@@ -212,6 +212,7 @@ class SqlStore:
         input: dict | None,
         status: str = "SCHEDULED",
         result: Any = None,
+        timeout_at: datetime | None = None,
         session: Session | None = None,
     ) -> None:
         def _apply(s: Session) -> None:
@@ -226,6 +227,7 @@ class SqlStore:
                     input=input,
                     status=status,
                     result=result,
+                    timeout_at=timeout_at,
                     completed_at=utcnow() if status == "COMPLETED" else None,
                 )
             )
@@ -236,6 +238,12 @@ class SqlStore:
             with self.Session.begin() as s:
                 _apply(s)
 
+    def get_step(self, run_id: str, seq: int, *, session: Session | None = None) -> WorkflowStep | None:
+        if session is not None:
+            return session.get(WorkflowStep, (run_id, seq))
+        with self.Session() as s:
+            return s.get(WorkflowStep, (run_id, seq))
+
     def complete_step(
         self,
         run_id: str,
@@ -245,8 +253,9 @@ class SqlStore:
         result: Any = None,
         error: Any = None,
         attempt: int = 0,
+        session: Session | None = None,
     ) -> None:
-        with self.Session.begin() as s:
+        def _apply(s: Session) -> None:
             step = s.get(WorkflowStep, (run_id, seq))
             if step is None:
                 return
@@ -255,6 +264,31 @@ class SqlStore:
             step.error = error
             step.attempt = attempt
             step.completed_at = utcnow()
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def find_due_activity_timeouts(self, *, now: datetime, limit: int = 100) -> list[tuple[str, int]]:
+        """``(run_id, seq)`` of SCHEDULED activity steps whose start-to-close deadline
+        has elapsed — i.e. dispatched but not reported back in time. The engine claims
+        each under the run lock (re-checking the deadline), so a result that lands
+        between the scan and the claim wins the race."""
+        with self.Session() as s:
+            rows = s.execute(
+                select(WorkflowStep.run_id, WorkflowStep.seq)
+                .where(
+                    WorkflowStep.kind == "ACTIVITY",
+                    WorkflowStep.status == "SCHEDULED",
+                    WorkflowStep.timeout_at.is_not(None),
+                    WorkflowStep.timeout_at <= now,
+                )
+                .order_by(WorkflowStep.timeout_at)
+                .limit(limit)
+            ).all()
+            return [(run_id, seq) for run_id, seq in rows]
 
     # ---------------------------------------------------------------- timers
     def create_timer(

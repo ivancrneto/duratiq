@@ -81,7 +81,12 @@ def test_run_once_starts_due_schedule(ns: SimpleNamespace) -> None:
 
 
 def test_run_once_idle_returns_zeros(ns: SimpleNamespace) -> None:
-    assert Scanner(ns.engine).run_once() == {"timers": 0, "schedules": 0, "recovery": 0}
+    assert Scanner(ns.engine).run_once() == {
+        "timers": 0,
+        "schedules": 0,
+        "activity_timeouts": 0,
+        "recovery": 0,
+    }
 
 
 # ------------------------------------------------------------------ validation
@@ -95,7 +100,7 @@ class _FakeEngine:
     """Records scan calls; optionally raises from one scan to test resilience."""
 
     def __init__(self, *, timers_raise: bool = False) -> None:
-        self.counts = {"timers": 0, "schedules": 0, "recovery": 0}
+        self.counts = {"timers": 0, "schedules": 0, "activity_timeouts": 0, "recovery": 0}
         self.timers_raise = timers_raise
 
     def fire_due_timers(self, *, now=None, limit=100) -> int:
@@ -106,6 +111,10 @@ class _FakeEngine:
 
     def fire_due_schedules(self, *, now=None, limit=100) -> int:
         self.counts["schedules"] += 1
+        return 0
+
+    def fire_due_activity_timeouts(self, *, now=None, limit=100) -> int:
+        self.counts["activity_timeouts"] += 1
         return 0
 
     def recover_stalled(self, *, older_than_seconds=60, now=None, limit=100) -> int:

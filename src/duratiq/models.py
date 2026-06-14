@@ -85,6 +85,10 @@ class WorkflowStep(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Per-attempt start-to-close deadline for an outstanding ACTIVITY step (NULL = no
+    # timeout). The activity-timeout scanner retries or fails a SCHEDULED activity once
+    # this elapses, so a hung or lost activity can't wedge the run forever.
+    timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class WorkflowTimer(Base):

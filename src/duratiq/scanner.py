@@ -1,13 +1,14 @@
 """The periodic scanner that makes a duratiq deployment self-driving.
 
-Three engine scans have to run on a cadence for durable execution to actually make
+A few engine scans have to run on a cadence for durable execution to actually make
 progress without a request poking it:
 
 * :meth:`Engine.fire_due_timers` — deliver elapsed ``ctx.sleep`` timers.
 * :meth:`Engine.fire_due_schedules` — start runs for cron schedules that came due.
+* :meth:`Engine.fire_due_activity_timeouts` — retry/fail activities past their deadline.
 * :meth:`Engine.recover_stalled` — re-tick runs whose tick was lost to a crash.
 
-:class:`Scanner` drives all three on independent intervals from one thread. It's a
+:class:`Scanner` drives them on independent intervals from one thread. It's a
 plain blocking loop (no APScheduler/periodiq dependency) — run it under whatever
 process manager you already have (systemd, a Kubernetes Deployment, supervisord),
 or embed it in a worker process with :meth:`run_forever` on a background thread.
@@ -55,15 +56,17 @@ class Scanner:
         timer_interval: float = 1.0,
         schedule_interval: float = 60.0,
         recovery_interval: float = 30.0,
+        activity_timeout_interval: float = 5.0,
         recovery_older_than: float = 60.0,
         limit: int = 100,
     ) -> None:
-        if min(timer_interval, schedule_interval, recovery_interval) <= 0:
+        if min(timer_interval, schedule_interval, recovery_interval, activity_timeout_interval) <= 0:
             raise ValueError("scan intervals must be positive")
         self.engine = engine
         self.timer_interval = timer_interval
         self.schedule_interval = schedule_interval
         self.recovery_interval = recovery_interval
+        self.activity_timeout_interval = activity_timeout_interval
         self.recovery_older_than = recovery_older_than
         self.limit = limit
         self._stop = threading.Event()
@@ -78,8 +81,11 @@ class Scanner:
     def _scan_recovery(self) -> int:
         return self.engine.recover_stalled(older_than_seconds=self.recovery_older_than, limit=self.limit)
 
+    def _scan_activity_timeouts(self) -> int:
+        return self.engine.fire_due_activity_timeouts(limit=self.limit)
+
     def run_once(self, *, now: datetime | None = None) -> dict[str, int]:
-        """Run all three scans once and return how many runs each advanced.
+        """Run every scan once and return how many runs each advanced.
 
         ``now`` is forwarded to every scan so tests can fast-forward the clock (note
         that a future ``now`` also makes ``recover_stalled`` treat runs as idle).
@@ -90,6 +96,7 @@ class Scanner:
         return {
             "timers": self.engine.fire_due_timers(now=now, limit=self.limit),
             "schedules": self.engine.fire_due_schedules(now=now, limit=self.limit),
+            "activity_timeouts": self.engine.fire_due_activity_timeouts(now=now, limit=self.limit),
             "recovery": self.engine.recover_stalled(
                 older_than_seconds=self.recovery_older_than, now=now, limit=self.limit
             ),
@@ -97,7 +104,7 @@ class Scanner:
 
     # ------------------------------------------------------------------- loop
     def run_forever(self) -> None:
-        """Drive the three scans until :meth:`stop` is called (blocking).
+        """Drive the scans until :meth:`stop` is called (blocking).
 
         Each scan fires on its own interval; the loop sleeps only until the nearest
         due scan, so timers stay responsive without busy-spinning. Interruptible —
@@ -107,6 +114,7 @@ class Scanner:
         scans: list[tuple[str, Callable[[], int], float, float]] = [
             ("timers", self._scan_timers, self.timer_interval, 0.0),
             ("schedules", self._scan_schedules, self.schedule_interval, 0.0),
+            ("activity_timeouts", self._scan_activity_timeouts, self.activity_timeout_interval, 0.0),
             ("recovery", self._scan_recovery, self.recovery_interval, 0.0),
         ]
         # (name, fn, interval, next_deadline) using a monotonic clock.
@@ -153,11 +161,14 @@ def _load_engine(ref: str) -> Engine:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m duratiq.scanner",
-        description="Run duratiq's periodic timer / schedule / recovery scans.",
+        description="Run duratiq's periodic timer / schedule / activity-timeout / recovery scans.",
     )
     parser.add_argument("engine_factory", help="'module:callable' returning a configured Engine")
     parser.add_argument("--timer-interval", type=float, default=1.0, help="seconds between timer scans")
     parser.add_argument("--schedule-interval", type=float, default=60.0, help="seconds between schedule scans")
+    parser.add_argument(
+        "--activity-timeout-interval", type=float, default=5.0, help="seconds between activity-timeout scans"
+    )
     parser.add_argument("--recovery-interval", type=float, default=30.0, help="seconds between recovery scans")
     parser.add_argument("--recovery-older-than", type=float, default=60.0, help="re-tick runs idle longer than this")
     parser.add_argument("--limit", type=int, default=100, help="max runs advanced per scan")
@@ -172,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         timer_interval=args.timer_interval,
         schedule_interval=args.schedule_interval,
         recovery_interval=args.recovery_interval,
+        activity_timeout_interval=args.activity_timeout_interval,
         recovery_older_than=args.recovery_older_than,
         limit=args.limit,
     )
