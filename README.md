@@ -400,6 +400,28 @@ Events: `run.started`, `run.suspended`, `run.completed` (carries `result`),
 **after** the state they describe is committed, and a listener that raises is
 swallowed — observability never breaks a run.
 
+## OpenTelemetry tracing
+
+`duratiq.otel.instrument` turns those events into OpenTelemetry spans — one line, no
+change to workflow code:
+
+```python
+from duratiq.otel import instrument
+
+instrument(engine)        # spans now flow to your configured OTLP backend
+```
+
+The key trick is **cross-process trace propagation with nothing stored**: every span
+for a run is placed in one trace whose id is *derived from the durable `run_id`* (a
+uuid4 hex is already a 128-bit W3C trace-id). The engine tick, an activity running in
+another worker, and a re-tick after a crash all compute the same trace-id from the
+run_id — so their spans land in one trace without threading any headers through
+messages. Spans carry `duratiq.run_id`, the workflow/activity name, `seq`/`attempt`,
+and an ERROR status with the error on failures. An existing `listener` is chained,
+not replaced. Use `run_trace_context(run_id)` to parent your own spans (an HTTP
+handler, an activity body) onto the same trace. Install with `pip install
+"duratiq[otel]"`.
+
 ## Listing runs
 
 Alongside `engine.get(run_id)`, `engine.list_runs` enumerates runs for an ops/admin
