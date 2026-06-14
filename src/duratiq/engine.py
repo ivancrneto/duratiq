@@ -234,6 +234,14 @@ class Engine:
             if ctx.scheduled_waits:
                 matched = self.store.match_signals(run_id, session=session)
 
+            # Cancel the losing side of any resolved wait_signal(timeout=...) race so
+            # it can't fire/match later: the timer if the signal won, the wait if it
+            # timed out. Done in this tick's transaction with the workflow's progress.
+            for seq in ctx.cancelled_timers:
+                self.store.cancel_timer(run_id, seq, session=session)
+            for seq in ctx.cancelled_waits:
+                self.store.cancel_wait(run_id, seq, session=session)
+
             # Record side-effect values computed during the replay. They are born
             # COMPLETED — the value was produced in this tick, not awaited — and
             # commit atomically with everything else so replay reuses them verbatim.

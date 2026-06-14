@@ -47,6 +47,20 @@ def _workflow_name(workflow: "str | Workflow | Any") -> str:
     raise TypeError(f"child_workflow expected a workflow name, a @workflow function, or a Workflow, got {workflow!r}")
 
 
+class _Timeout:
+    """Sentinel returned by ``ctx.wait_signal(name, timeout=...)`` when the timeout
+    fires before a signal arrives. A distinct object (not ``None``) so it can't be
+    confused with a signal whose payload is ``None``; test with ``is TIMEOUT``."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "duratiq.TIMEOUT"
+
+
+TIMEOUT = _Timeout()
+
+
 @dataclass
 class ScheduledActivity:
     seq: int
@@ -110,6 +124,10 @@ class WorkflowContext:
         self.scheduled_side_effects: list[ScheduledSideEffect] = []
         self.scheduled_patches: list[ScheduledPatch] = []
         self.scheduled_children: list[ScheduledChild] = []
+        # Seqs of the losing side of a wait_signal(timeout=...) race to cancel in this
+        # tick's transaction: the timer if the signal won, the wait if it timed out.
+        self.cancelled_timers: list[int] = []
+        self.cancelled_waits: list[int] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -179,7 +197,7 @@ class WorkflowContext:
         self.scheduled_timers.append(ScheduledTimer(seq=seq, delay_seconds=duration_seconds(duration)))
         raise Suspend()
 
-    def wait_signal(self, name: str) -> Any:
+    def wait_signal(self, name: str, *, timeout: float | str | None = None) -> Any:
         """Wait for an external signal named ``name`` and return its payload.
 
         The run suspends until ``engine.signal(run_id, name, payload)`` delivers a
@@ -187,7 +205,19 @@ class WorkflowContext:
         outside event. Signals that arrive *before* the wait is reached are queued
         and matched FIFO, so there is no race. On replay the consumed payload is
         returned without re-waiting.
+
+        With ``timeout`` (seconds, or an ISO-8601 string like ``"PT24H"``) the wait
+        races a durable timer: if the signal arrives first its payload is returned; if
+        the timer fires first :data:`TIMEOUT` is returned (a distinct sentinel, so a
+        ``None`` payload is unambiguous — test with ``is TIMEOUT``). The losing side is
+        cancelled, so a signal that lands after a timeout is left for a later wait
+        rather than silently consumed.
         """
+        if timeout is None:
+            return self._wait_signal_forever(name)
+        return self._wait_signal_timeout(name, timeout)
+
+    def _wait_signal_forever(self, name: str) -> Any:
         seq = self._next_seq()
         step = self._history.get(seq)
 
@@ -210,6 +240,46 @@ class WorkflowContext:
         # Not in history: register the wait (the engine records it and pairs any
         # already-queued signal in the same transaction).
         self.scheduled_waits.append(ScheduledWait(seq=seq, name=name))
+        raise Suspend()
+
+    def _wait_signal_timeout(self, name: str, timeout: float | str) -> Any:
+        # A wait_signal(timeout=) occupies two consecutive seqs — a SIGNAL_WAIT and a
+        # TIMER — and resolves to whichever completes first. The signal takes priority
+        # if both completed in the same window, which keeps the decision deterministic.
+        sig_seq = self._next_seq()
+        timer_seq = self._next_seq()
+        sig_step = self._history.get(sig_seq)
+        timer_step = self._history.get(timer_seq)
+
+        if sig_step is not None and sig_step.kind != "SIGNAL_WAIT":
+            raise DeterminismError(
+                f"replay divergence at seq {sig_seq}: history recorded a {sig_step.kind!r} step, "
+                f"but the workflow called ctx.wait_signal(timeout=...). Did the workflow code change?"
+            )
+        if sig_step is not None and sig_step.name != name:
+            raise DeterminismError(
+                f"replay divergence at seq {sig_seq}: history waited on signal {sig_step.name!r}, "
+                f"but the workflow now waits on {name!r}. Did the workflow code change?"
+            )
+        if timer_step is not None and timer_step.kind != "TIMER":
+            raise DeterminismError(
+                f"replay divergence at seq {timer_seq}: history recorded a {timer_step.kind!r} step, "
+                f"but the workflow called ctx.wait_signal(timeout=...). Did the workflow code change?"
+            )
+
+        if sig_step is not None and sig_step.status == "COMPLETED":
+            if timer_step is not None and timer_step.status == "SCHEDULED":
+                self.cancelled_timers.append(timer_seq)  # signal won — drop the timer
+            return (sig_step.result or {}).get("value")
+        if timer_step is not None and timer_step.status == "COMPLETED":
+            if sig_step is not None and sig_step.status == "SCHEDULED":
+                self.cancelled_waits.append(sig_seq)  # timed out — drop the abandoned wait
+            return TIMEOUT
+
+        if sig_step is None and timer_step is None:
+            # First encounter: arm both sides.
+            self.scheduled_waits.append(ScheduledWait(seq=sig_seq, name=name))
+            self.scheduled_timers.append(ScheduledTimer(seq=timer_seq, delay_seconds=duration_seconds(timeout)))
         raise Suspend()
 
     def side_effect(self, fn: Callable[[], Any]) -> Any:
