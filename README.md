@@ -8,9 +8,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
-> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus `ctx.patched`
-> versioning for safely evolving deployed workflow code. Fast-follow items
-> (`continue-as-new`) remain.
+> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
+> `continue-as-new` (`ctx.continue_as_new`) for long-running loops and `ctx.patched`
+> versioning for safely evolving deployed workflow code.
 
 ## The idea
 
@@ -109,6 +109,24 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
+**Signal-with-start.** `engine.signal_with_start(name, signal=..., payload=...,
+idempotency_key=...)` delivers a signal to a run, starting it first if it doesn't
+exist yet. Dedupe on `idempotency_key`: the first call starts the workflow, every
+later call just signals the running one. It's the right primitive for "ensure a
+per-entity workflow is running, then nudge it" — e.g. a per-customer cart workflow
+you signal on every add-to-cart, starting it on the first:
+
+```python
+# first add-to-cart starts the cart workflow and delivers the item;
+# every later one signals the same run (same idempotency_key -> same run id).
+run_id = engine.signal_with_start(
+    "cart", signal="add_item", payload={"sku": "A1"}, idempotency_key=f"cart:{customer_id}",
+)
+```
+
+The signal is queued before the first tick, so the run's `ctx.wait_signal` finds it
+already waiting — no race against the start.
+
 ## Side effects
 
 Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or
@@ -148,6 +166,33 @@ workflow resumes only once every branch has completed, and results come back in
 call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
+
+## Continue-as-new
+
+Each tick replays from the top, so a workflow that loops forever — an event loop
+draining a queue, a long poll — accumulates step history without bound.
+`ctx.continue_as_new(**kwargs)` ends the current iteration and restarts the run
+*as if freshly started* with new input and an **empty history**, keeping the same
+run id:
+
+```python
+@workflow(name="poller", registry=reg)
+def poller(ctx, cursor, processed):
+    batch = ctx.activity(fetch_since, cursor)
+    for item in batch:
+        ctx.activity(handle, item)
+    ctx.sleep("PT1M")
+    # Restart with a fresh history instead of growing it forever.
+    ctx.continue_as_new(cursor=batch.next_cursor, processed=processed + len(batch))
+```
+
+Reaching the call means every prior `ctx` step in this iteration already completed,
+so there is nothing in flight to lose. The engine truncates the run's steps, fired
+timers, and consumed signals, then re-ticks it from seq 0 with the carried input.
+**Signals that haven't been consumed yet carry over** to the next iteration, so a
+queue-draining loop never drops a queued event across the restart. Like the other
+control-flow points, it survives a crash: the reset commits atomically with the
+tick, so recovery just resumes the new iteration.
 
 ## Child workflows
 
@@ -228,5 +273,5 @@ redelivery.)
 
 ## What's next (from the plan)
 
-The fast-follow items still open: `continue-as-new` (history truncation for long
-loops), signal-with-start, cron schedules, and parent→child cancellation cascade.
+The fast-follow items still open: signal-with-start, cron schedules, and parent→child
+cancellation cascade.

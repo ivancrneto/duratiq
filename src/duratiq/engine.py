@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .context import WorkflowContext
-from .exceptions import ActivityFailed, ChildWorkflowFailed, Suspend
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, Suspend
 from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
@@ -56,6 +56,42 @@ class Engine:
         self.driver.request_tick(run_id)
         return run_id
 
+    def signal_with_start(
+        self, name: str, *, signal: str, payload: Any = None, idempotency_key: str | None = None, **kwargs: Any
+    ) -> str:
+        """Deliver a signal to a run, starting it first if it does not exist yet.
+
+        The classic Temporal "signal-with-start": dedupe on ``idempotency_key`` —
+        if a run already exists, just signal it; otherwise start a fresh run and
+        deliver the signal so it is waiting in the inbox before the first tick. The
+        run's ``ctx.wait_signal(signal)`` then consumes it immediately, with no race
+        against the start. Returns the run id (existing or new).
+
+        Use it for "ensure a per-entity workflow is running, then nudge it" — e.g. a
+        per-customer cart workflow that you signal on every add-to-cart, starting it
+        on the first one.
+        """
+        wf = self.registry.get_workflow(name)  # validate name early
+        if idempotency_key:
+            existing = self.store.find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                self.signal(existing.id, signal, payload)
+                return existing.id
+        run_id = uuid4().hex
+        self.store.create_run(
+            run_id=run_id,
+            name=name,
+            version=wf.version,
+            input=kwargs,
+            idempotency_key=idempotency_key,
+        )
+        # Queue the signal before the first tick so the inbox already holds it when
+        # the run reaches its wait — matched FIFO, exactly like a signal that races
+        # ahead of its wait normally.
+        self.store.add_signal(run_id, signal, payload)
+        self.driver.request_tick(run_id)
+        return run_id
+
     def get(self, run_id: str) -> WorkflowRun | None:
         return self.store.get_run(run_id)
 
@@ -64,6 +100,7 @@ class Engine:
         scheduled: list = []
         children: list = []
         matched = 0
+        restart = False
         parent_notify: tuple | None = None  # (parent_run_id, parent_seq, status, result, error)
         with self.store.locked_run(run_id) as session:
             run = self.store.get_run(run_id, session=session)
@@ -81,6 +118,11 @@ class Engine:
                 result = wf.fn(ctx, **(run.input or {}))
             except Suspend:
                 self.store.update_run(run_id, session=session, status="SUSPENDED")
+            except ContinueAsNew as can:
+                # Truncate history and reset the run to PENDING with the new input;
+                # the run restarts from seq 0 on the re-tick requested post-commit.
+                self.store.continue_as_new(run_id, new_input=can.input, session=session)
+                restart = True
             except (ActivityFailed, ChildWorkflowFailed) as exc:
                 terminal_status, terminal_error = "FAILED", {"type": type(exc).__name__, "message": str(exc)}
                 self.store.update_run(run_id, session=session, status="FAILED", error=terminal_error)
@@ -201,6 +243,9 @@ class Engine:
             self._start_child(run_id, sc.seq, sc.name, sc.input)
         # A queued signal was consumed during this tick — replay again to advance.
         if matched:
+            self.driver.request_tick(run_id)
+        # continue-as-new reset the run to PENDING — kick off the next iteration.
+        if restart:
             self.driver.request_tick(run_id)
         # This run finished and has a parent waiting on it — resolve the parent's step.
         if parent_notify is not None:
