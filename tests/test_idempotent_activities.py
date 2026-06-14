@@ -7,7 +7,6 @@ effect is not repeated, but the activity still completes with the recorded value
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 

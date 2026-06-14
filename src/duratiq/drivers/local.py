@@ -23,9 +23,7 @@ class LocalDriver:
     def request_tick(self, run_id: str) -> None:
         self.queue.append(("tick", run_id))
 
-    def dispatch_activity(
-        self, run_id: str, seq: int, name: str, args: list, kwargs: dict, max_retries: int
-    ) -> None:
+    def dispatch_activity(self, run_id: str, seq: int, name: str, args: list, kwargs: dict, max_retries: int) -> None:
         self.queue.append(("activity", run_id, seq, name, args, kwargs, max_retries))
 
     # ---- Pumping ----------------------------------------------------------

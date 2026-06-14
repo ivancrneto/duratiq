@@ -17,7 +17,7 @@ from duratiq.drivers.local import LocalDriver
 
 reg = Registry()
 
-charges: list[str] = []          # every real charge appended here — should end length 1
+charges: list[str] = []  # every real charge appended here — should end length 1
 attempts = {"n": 0}
 
 
