@@ -16,6 +16,11 @@ postgres = ["psycopg[binary]>=3.1"]
 examples = ["dramatiq>=1.16", "redis>=5", "psycopg[binary]>=3.1"]
 dev = ["pytest>=8", "dramatiq>=1.16"]
 
+[project.scripts]
+# Periodic timer / schedule / recovery scanner. Point it at a 'module:callable'
+# that returns a configured Engine, e.g. `duratiq-scanner myapp.workers:make_engine`.
+duratiq-scanner = "duratiq.scanner:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
