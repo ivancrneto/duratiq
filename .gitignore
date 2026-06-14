@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Local SQLite databases (e.g. the alembic.ini default dev DB)
+*.db
+
 # C extensions
 *.so
 
