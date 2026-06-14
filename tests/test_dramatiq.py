@@ -53,3 +53,44 @@ def test_end_to_end_via_dramatiq() -> None:
     assert run.status == "COMPLETED"
     assert run.result["value"] == 3
     assert calls["n"] == 2
+
+
+def test_child_workflow_end_to_end_via_dramatiq() -> None:
+    broker = StubBroker()
+    reg = Registry()
+
+    @activity(name="double", registry=reg)
+    def double(x: int) -> int:
+        return x * 2
+
+    @workflow(name="doubler", registry=reg)
+    def doubler(ctx, x: int) -> int:
+        return ctx.activity(double, x)
+
+    @workflow(name="parent", registry=reg)
+    def parent(ctx, x: int) -> dict:
+        doubled = ctx.child_workflow("doubler", x=x)
+        return {"doubled": doubled}
+
+    db = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool, future=True)
+    store = SqlStore(engine=db)
+    store.create_all()
+    engine = Engine(reg, store)
+    driver = DramatiqDriver(engine, broker=broker)
+
+    worker = dramatiq.Worker(broker, worker_threads=1)
+    worker.start()
+    try:
+        run_id = engine.start("parent", x=21)
+        broker.join(driver.queue_name)
+        worker.join()
+    finally:
+        worker.stop()
+
+    run = store.get_run(run_id)
+    assert run.status == "COMPLETED"
+    assert run.result["value"] == {"doubled": 42}
+    # The child run completed and is linked back to the parent.
+    child_step = next(s for s in store.get_steps(run_id) if s.kind == "CHILD_WORKFLOW")
+    child = store.find_child_run(run_id, child_step.seq)
+    assert child is not None and child.status == "COMPLETED"

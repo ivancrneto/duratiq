@@ -35,11 +35,11 @@ class WorkflowEvent:
 
     type: str
     run_id: str
-    name: str | None = None       # workflow name (run.*) or activity name (activity.*)
-    seq: int | None = None        # step seq for activity.* events
-    result: Any = None            # the run's return value on run.completed
-    error: Any = None             # error dict on run.failed / activity.failed
-    attempt: int | None = None    # activity attempt index on activity.* events
+    name: str | None = None  # workflow name (run.*) or activity name (activity.*)
+    seq: int | None = None  # step seq for activity.* events
+    result: Any = None  # the run's return value on run.completed
+    error: Any = None  # error dict on run.failed / activity.failed
+    attempt: int | None = None  # activity attempt index on activity.* events
 
 
 Listener = Callable[[WorkflowEvent], None]
