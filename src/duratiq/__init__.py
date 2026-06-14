@@ -15,6 +15,7 @@ versioning) remain.
 
 from __future__ import annotations
 
+from .activity_runtime import ActivityInfo, activity_info, run_once
 from .codec import IdentityCodec, PayloadCodec, get_payload_codec, set_payload_codec
 from .context import WorkflowContext
 from .decorators import activity, default_registry, workflow
@@ -26,6 +27,7 @@ from .store import SqlStore
 __all__ = [
     "Activity",
     "ActivityFailed",
+    "ActivityInfo",
     "ChildWorkflowFailed",
     "ContinueAsNew",
     "DeterminismError",
@@ -39,8 +41,10 @@ __all__ = [
     "WorkflowContext",
     "WorkflowNotFound",
     "activity",
+    "activity_info",
     "default_registry",
     "get_payload_codec",
+    "run_once",
     "set_payload_codec",
     "workflow",
 ]

@@ -11,6 +11,9 @@ The tables are the heart of the engine:
 * ``workflow_signals`` — the inbox for ``ctx.wait_signal``. Signals are stored
   independently of the waits that consume them (a signal can arrive before the
   workflow waits for it); ``consumed_seq`` records which SIGNAL_WAIT step took it.
+* ``workflow_dedup`` — the idempotency ledger behind ``run_once``. One row per
+  recorded effect, keyed by a caller-chosen idempotency key; a redelivered or
+  retried activity that reuses the key gets the stored result instead of re-running.
 * ``workflow_schedules`` — recurring starts. Each row holds a cron expression and a
   ``next_fire_at``; the schedule scanner starts a fresh run when it comes due and
   advances ``next_fire_at`` to the next cron time.
@@ -117,6 +120,25 @@ class WorkflowSignal(Base):
     payload: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class WorkflowDedup(Base):
+    """The idempotency ledger behind ``run_once`` — one row per recorded effect.
+
+    ``key`` is the caller's idempotency key (defaulting to the activity's stable
+    ``run_id:seq``). The first ``run_once(key, fn)`` records ``fn``'s result here; a
+    later call with the same key returns the stored result without re-running ``fn``,
+    so a retried or redelivered activity doesn't repeat its external effect.
+    ``run_id`` / ``seq`` are kept for traceability.
+    """
+
+    __tablename__ = "workflow_dedup"
+
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result: Mapped[Any] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class WorkflowSchedule(Base):

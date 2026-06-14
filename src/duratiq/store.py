@@ -18,9 +18,19 @@ from typing import Any, Callable
 
 from sqlalchemy import Engine as SaEngine
 from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, WorkflowRun, WorkflowSchedule, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
+from .models import (
+    Base,
+    WorkflowDedup,
+    WorkflowRun,
+    WorkflowSchedule,
+    WorkflowSignal,
+    WorkflowStep,
+    WorkflowTimer,
+    utcnow,
+)
 
 
 def _advisory_key(run_id: str) -> int:
@@ -332,6 +342,24 @@ class SqlStore:
             wait.completed_at = utcnow()
             matched += 1
         return matched
+
+    # ----------------------------------------------------------------- dedup
+    def get_dedup(self, key: str) -> WorkflowDedup | None:
+        with self.Session() as s:
+            return s.get(WorkflowDedup, key)
+
+    def put_dedup(self, *, key: str, run_id: str, seq: int, result: Any) -> bool:
+        """Record an effect under ``key``. Returns ``False`` if one already existed.
+
+        Insert-if-absent: a concurrent writer that wins the race keeps its row (the
+        unique key makes the loser's insert a no-op), so the stored result is stable.
+        """
+        try:
+            with self.Session.begin() as s:
+                s.add(WorkflowDedup(key=key, run_id=run_id, seq=seq, result=result))
+            return True
+        except IntegrityError:
+            return False
 
     # ------------------------------------------------------------- schedules
     def create_schedule(self, *, id: str, name: str, cron: str, input: dict, next_fire_at: datetime) -> bool:
