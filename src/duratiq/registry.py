@@ -30,6 +30,17 @@ class Activity:
     # outstanding before the engine times it out and retries (or fails it once the
     # retry budget is spent). ``None`` = no timeout (a hung activity waits forever).
     start_to_close_ms: int | None = None
+    # Heartbeat timeout: the most time allowed *between* ``heartbeat()`` calls inside
+    # a long-running activity. Each heartbeat pushes the deadline out, so an activity
+    # that keeps beating never times out; one that goes silent does. Takes precedence
+    # over ``start_to_close_ms`` as the attempt deadline when set.
+    heartbeat_timeout_ms: int | None = None
+
+    @property
+    def attempt_timeout_ms(self) -> int | None:
+        """The deadline (ms) for one dispatched attempt: the heartbeat interval if the
+        activity heartbeats, else the start-to-close timeout, else ``None``."""
+        return self.heartbeat_timeout_ms or self.start_to_close_ms
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # Allow calling the activity directly (handy in unit tests / outside a workflow).

@@ -272,6 +272,20 @@ class SqlStore:
             with self.Session.begin() as s:
                 _apply(s)
 
+    def record_heartbeat(self, run_id: str, seq: int, *, details: Any, timeout_at: datetime | None) -> None:
+        """Record an activity's latest progress and push its timeout deadline out.
+
+        Called from inside the activity body (on a worker), in its own transaction. Only
+        an outstanding (SCHEDULED) activity heartbeats — a beat after the step finished
+        is ignored — so it can't revive a step the timeout scanner already failed."""
+        with self.Session.begin() as s:
+            step = s.get(WorkflowStep, (run_id, seq))
+            if step is None or step.status != "SCHEDULED":
+                return
+            step.heartbeat = {"value": details}
+            if timeout_at is not None:
+                step.timeout_at = timeout_at
+
     def find_due_activity_timeouts(self, *, now: datetime, limit: int = 100) -> list[tuple[str, int]]:
         """``(run_id, seq)`` of SCHEDULED activity steps whose start-to-close deadline
         has elapsed — i.e. dispatched but not reported back in time. The engine claims

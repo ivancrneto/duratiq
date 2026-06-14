@@ -15,7 +15,7 @@ versioning) remain.
 
 from __future__ import annotations
 
-from .activity_runtime import ActivityInfo, activity_info, run_once
+from .activity_runtime import ActivityInfo, activity_info, heartbeat, heartbeat_details, run_once
 from .codec import IdentityCodec, PayloadCodec, get_payload_codec, set_payload_codec
 from .context import TIMEOUT, WorkflowContext
 from .decorators import activity, default_registry, workflow
@@ -61,6 +61,8 @@ __all__ = [
     "activity_info",
     "default_registry",
     "get_payload_codec",
+    "heartbeat",
+    "heartbeat_details",
     "run_once",
     "set_payload_codec",
     "workflow",

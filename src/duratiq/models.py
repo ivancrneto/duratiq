@@ -92,6 +92,9 @@ class WorkflowStep(Base):
     # timeout). The activity-timeout scanner retries or fails a SCHEDULED activity once
     # this elapses, so a hung or lost activity can't wedge the run forever.
     timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Latest progress reported by ``heartbeat(details)`` inside a long-running activity;
+    # a retry of the same step reads it back via ``heartbeat_details()`` to resume.
+    heartbeat: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
 
 
 class WorkflowTimer(Base):

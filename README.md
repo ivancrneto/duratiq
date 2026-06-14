@@ -414,6 +414,32 @@ result that lands in the same moment wins the race. Like any retry this can re-r
 still-running activity, so the **idempotency** rule above still applies. Activities
 without a `start_to_close_ms` have no deadline (the previous behaviour, unchanged).
 
+## Heartbeats
+
+A `start_to_close_ms` is a fixed cap — too tight for an activity whose duration varies
+(reindexing N rows, draining a queue). A **heartbeat timeout** instead bounds the time
+*between* progress reports: declare `heartbeat_timeout_ms` and call `heartbeat()` from
+inside the activity. Each beat pushes the deadline out, so an activity that keeps
+beating runs as long as it needs, while one that goes silent is timed out and retried.
+
+```python
+from duratiq import activity, heartbeat, heartbeat_details
+
+@activity(name="reindex", registry=reg, heartbeat_timeout_ms=60_000, max_retries=3)
+def reindex(total):
+    start = heartbeat_details() or 0      # resume where the last attempt left off
+    for i in range(start, total):
+        ...                               # a chunk of work
+        heartbeat(i + 1)                  # report progress + stay alive
+    return "done"
+```
+
+`heartbeat(details)` records the latest **progress** (any JSON value) and resets the
+deadline; on a timeout the progress survives onto the retried attempt, so
+`heartbeat_details()` lets it **resume instead of restarting**. It reuses the same
+activity-timeout scanner — a missed heartbeat is just a timed-out attempt. A beat after
+the step has finished is ignored (it can't revive a step the scanner already failed).
+
 ## Idempotent activities
 
 Activities are **at-least-once** — a retry, a broker redelivery, or a crash can run

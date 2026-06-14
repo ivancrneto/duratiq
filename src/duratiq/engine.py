@@ -296,10 +296,11 @@ class Engine:
                 outcome = (events.RUN_COMPLETED, result, None)
 
             # Record any newly-scheduled activities inside the same transaction. An
-            # activity with a start-to-close timeout carries a deadline, so the
-            # timeout scanner can retry/fail it if it never reports back.
+            # activity with a start-to-close or heartbeat timeout carries a deadline, so
+            # the timeout scanner can retry/fail it if it never reports back or beats.
             for sa in ctx.scheduled:
-                timeout_at = utcnow() + timedelta(milliseconds=sa.start_to_close_ms) if sa.start_to_close_ms else None
+                ms = sa.heartbeat_timeout_ms or sa.start_to_close_ms
+                timeout_at = utcnow() + timedelta(milliseconds=ms) if ms else None
                 self.store.create_step(
                     run_id,
                     sa.seq,
@@ -553,17 +554,20 @@ class Engine:
             if deadline > now:
                 return False  # already resolved or its deadline was pushed out
             activity = self.registry.get_activity(step.name)
-            ms = activity.start_to_close_ms
+            ms = activity.attempt_timeout_ms
             if step.attempt < activity.max_retries and ms:
                 step.attempt += 1
                 step.timeout_at = now + timedelta(milliseconds=ms)
+                # Keep step.heartbeat: the retried attempt reads it via heartbeat_details()
+                # to resume from the last reported progress rather than restarting.
                 args = (step.input or {}).get("args", [])
                 kwargs = (step.input or {}).get("kwargs", {})
                 redispatch = (step.attempt, step.name, args, kwargs, activity.max_retries)
             else:
+                kind = "missed a heartbeat" if activity.heartbeat_timeout_ms else "timed out"
                 error = {
                     "type": "ActivityTimeout",
-                    "message": f"activity {step.name!r} timed out after {ms} ms on attempt {step.attempt}",
+                    "message": f"activity {step.name!r} {kind} after {ms} ms on attempt {step.attempt}",
                 }
                 self.store.complete_step(
                     run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session
