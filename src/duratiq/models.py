@@ -11,6 +11,9 @@ The tables are the heart of the engine:
 * ``workflow_signals`` — the inbox for ``ctx.wait_signal``. Signals are stored
   independently of the waits that consume them (a signal can arrive before the
   workflow waits for it); ``consumed_seq`` records which SIGNAL_WAIT step took it.
+* ``workflow_schedules`` — recurring starts. Each row holds a cron expression and a
+  ``next_fire_at``; the schedule scanner starts a fresh run when it comes due and
+  advances ``next_fire_at`` to the next cron time.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .codec import CodecJSON
@@ -114,3 +117,27 @@ class WorkflowSignal(Base):
     payload: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class WorkflowSchedule(Base):
+    """A recurring workflow start, driven by the schedule scanner.
+
+    ``cron`` is a standard 5-field expression; ``next_fire_at`` is the next time a run
+    is due (indexed for the scan). When the scanner fires a schedule it starts a run
+    with ``input`` as the workflow kwargs, stamps ``last_run_id`` / ``last_fired_at``,
+    and advances ``next_fire_at`` to the following cron time. ``active`` gates a
+    schedule off without deleting it.
+    """
+
+    __tablename__ = "workflow_schedules"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    cron: Mapped[str] = mapped_column(String(255))
+    input: Mapped[Any] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    next_fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

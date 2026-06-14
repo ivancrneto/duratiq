@@ -9,8 +9,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
 > (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
-> `continue-as-new` (`ctx.continue_as_new`) for long-running loops and `ctx.patched`
-> versioning for safely evolving deployed workflow code.
+> `continue-as-new` (`ctx.continue_as_new`) for long-running loops, `ctx.patched`
+> versioning for safely evolving deployed workflow code, and recurring cron schedules
+> (`engine.create_schedule`).
 
 ## The idea
 
@@ -87,6 +88,29 @@ The deadline is computed once and stored, so it survives replay and crashes. A
 periodic **timer scanner** drives it — call `engine.fire_due_timers()` from cron
 or `periodiq`; it delivers every elapsed timer and re-ticks the runs they unblock.
 Tests pass `now=...` to fast-forward without sleeping.
+
+## Recurring schedules
+
+Start a workflow on a cron cadence. `engine.create_schedule` registers it; a
+periodic **schedule scanner** — `engine.fire_due_schedules()`, called from
+cron/`periodiq` alongside `fire_due_timers` — starts a run each time the schedule
+comes due:
+
+```python
+# 9am every weekday
+sid = engine.create_schedule("daily_report", "0 9 * * 1-5", region="eu")
+
+# in your once-a-minute scanner:
+engine.fire_due_schedules()        # starts due runs, advances each to its next cron time
+```
+
+The cron parser supports the standard 5 fields (`* */n a-b a,b,c`, day-of-week
+`0`/`7` = Sunday, and the Vixie rule that a restricted day-of-month **or**
+day-of-week matches). Each due schedule is *claimed* — its next fire time advanced —
+before its run starts, so concurrent scanners don't double-fire and a missed tick is
+skipped rather than backfilled. Pass `schedule_id=` to make registration idempotent;
+`pause_schedule` / `resume_schedule` / `delete_schedule` manage the lifecycle. Tests
+pass `now=...` to fast-forward without waiting on the clock.
 
 ## Signals
 
@@ -306,5 +330,5 @@ starting the engine.
 
 ## What's next (from the plan)
 
-The fast-follow items still open: signal-with-start, cron schedules, and parent→child
-cancellation cascade.
+The fast-follow items still open: signal-with-start, and parent→child cancellation
+cascade.
