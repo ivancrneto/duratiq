@@ -48,6 +48,8 @@ class SqlStore:
         version: int,
         input: dict,
         idempotency_key: str | None = None,
+        parent_run_id: str | None = None,
+        parent_seq: int | None = None,
     ) -> str:
         with self.Session.begin() as session:
             session.add(
@@ -58,9 +60,25 @@ class SqlStore:
                     input=input,
                     status="PENDING",
                     idempotency_key=idempotency_key,
+                    parent_run_id=parent_run_id,
+                    parent_seq=parent_seq,
                 )
             )
         return run_id
+
+    def find_child_run(self, parent_run_id: str, parent_seq: int) -> WorkflowRun | None:
+        """Return the child run started by a parent's CHILD_WORKFLOW step, if any.
+
+        Lets the engine make child-start idempotent: a re-tick that would otherwise
+        start the same child twice finds the existing run instead.
+        """
+        with self.Session() as s:
+            return s.scalar(
+                select(WorkflowRun).where(
+                    WorkflowRun.parent_run_id == parent_run_id,
+                    WorkflowRun.parent_seq == parent_seq,
+                )
+            )
 
     def get_run(self, run_id: str, *, session: Session | None = None) -> WorkflowRun | None:
         if session is not None:
@@ -90,11 +108,7 @@ class SqlStore:
     # ----------------------------------------------------------------- steps
     def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:
         def _query(s: Session) -> list[WorkflowStep]:
-            return list(
-                s.scalars(
-                    select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)
-                )
-            )
+            return list(s.scalars(select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)))
 
         if session is not None:
             return _query(session)
@@ -118,8 +132,13 @@ class SqlStore:
                 return  # idempotent: this command was already scheduled on a prior tick
             s.add(
                 WorkflowStep(
-                    run_id=run_id, seq=seq, kind=kind, name=name, input=input,
-                    status=status, result=result,
+                    run_id=run_id,
+                    seq=seq,
+                    kind=kind,
+                    name=name,
+                    input=input,
+                    status=status,
+                    result=result,
                     completed_at=utcnow() if status == "COMPLETED" else None,
                 )
             )
@@ -276,19 +295,13 @@ class SqlStore:
         return matched
 
     # ------------------------------------------------------------- schedules
-    def create_schedule(
-        self, *, id: str, name: str, cron: str, input: dict, next_fire_at: datetime
-    ) -> bool:
+    def create_schedule(self, *, id: str, name: str, cron: str, input: dict, next_fire_at: datetime) -> bool:
         """Insert a recurring schedule. Idempotent on ``id``: returns ``False`` (and
         leaves the existing row untouched) if one with this id already exists."""
         with self.Session.begin() as s:
             if s.get(WorkflowSchedule, id) is not None:
                 return False
-            s.add(
-                WorkflowSchedule(
-                    id=id, name=name, cron=cron, input=input, active=True, next_fire_at=next_fire_at
-                )
-            )
+            s.add(WorkflowSchedule(id=id, name=name, cron=cron, input=input, active=True, next_fire_at=next_fire_at))
         return True
 
     def get_schedule(self, schedule_id: str) -> WorkflowSchedule | None:

@@ -71,7 +71,9 @@ def test_vixie_either_day_matches_when_both_restricted() -> None:
         assert not spec.matches(neither)
 
 
-@pytest.mark.parametrize("bad", ["* * * *", "* * * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "*/0 * * * *"])
+@pytest.mark.parametrize(
+    "bad", ["* * * *", "* * * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "*/0 * * * *"]
+)
 def test_invalid_expressions_raise(bad: str) -> None:
     with pytest.raises(ValueError):
         parse_cron(bad)

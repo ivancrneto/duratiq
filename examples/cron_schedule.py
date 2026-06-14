@@ -10,7 +10,7 @@ the scanner, the same call that periodic trigger would make.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from duratiq import Engine, Registry, SqlStore, activity, workflow
 from duratiq.drivers.local import LocalDriver
@@ -38,8 +38,11 @@ def main() -> None:
 
     # 09:00 every weekday (Mon-Fri).
     sid = engine.create_schedule(
-        "daily_report", "0 9 * * 1-5",
-        schedule_id="eu-daily", now=datetime(2026, 6, 15, 0, 0, tzinfo=UTC), region="eu",
+        "daily_report",
+        "0 9 * * 1-5",
+        schedule_id="eu-daily",
+        now=datetime(2026, 6, 15, 0, 0, tzinfo=UTC),
+        region="eu",
     )
     sch = store.get_schedule(sid)
     print(f"registered schedule {sid!r}; first fire at {sch.next_fire_at}\n")
