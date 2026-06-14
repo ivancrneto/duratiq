@@ -108,6 +108,24 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
+**Signal-with-start.** `engine.signal_with_start(name, signal=..., payload=...,
+idempotency_key=...)` delivers a signal to a run, starting it first if it doesn't
+exist yet. Dedupe on `idempotency_key`: the first call starts the workflow, every
+later call just signals the running one. It's the right primitive for "ensure a
+per-entity workflow is running, then nudge it" — e.g. a per-customer cart workflow
+you signal on every add-to-cart, starting it on the first:
+
+```python
+# first add-to-cart starts the cart workflow and delivers the item;
+# every later one signals the same run (same idempotency_key -> same run id).
+run_id = engine.signal_with_start(
+    "cart", signal="add_item", payload={"sku": "A1"}, idempotency_key=f"cart:{customer_id}",
+)
+```
+
+The signal is queued before the first tick, so the run's `ctx.wait_signal` finds it
+already waiting — no race against the start.
+
 ## Side effects
 
 Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or

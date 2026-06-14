@@ -56,6 +56,42 @@ class Engine:
         self.driver.request_tick(run_id)
         return run_id
 
+    def signal_with_start(
+        self, name: str, *, signal: str, payload: Any = None, idempotency_key: str | None = None, **kwargs: Any
+    ) -> str:
+        """Deliver a signal to a run, starting it first if it does not exist yet.
+
+        The classic Temporal "signal-with-start": dedupe on ``idempotency_key`` —
+        if a run already exists, just signal it; otherwise start a fresh run and
+        deliver the signal so it is waiting in the inbox before the first tick. The
+        run's ``ctx.wait_signal(signal)`` then consumes it immediately, with no race
+        against the start. Returns the run id (existing or new).
+
+        Use it for "ensure a per-entity workflow is running, then nudge it" — e.g. a
+        per-customer cart workflow that you signal on every add-to-cart, starting it
+        on the first one.
+        """
+        wf = self.registry.get_workflow(name)  # validate name early
+        if idempotency_key:
+            existing = self.store.find_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                self.signal(existing.id, signal, payload)
+                return existing.id
+        run_id = uuid4().hex
+        self.store.create_run(
+            run_id=run_id,
+            name=name,
+            version=wf.version,
+            input=kwargs,
+            idempotency_key=idempotency_key,
+        )
+        # Queue the signal before the first tick so the inbox already holds it when
+        # the run reaches its wait — matched FIFO, exactly like a signal that races
+        # ahead of its wait normally.
+        self.store.add_signal(run_id, signal, payload)
+        self.driver.request_tick(run_id)
+        return run_id
+
     def get(self, run_id: str) -> WorkflowRun | None:
         return self.store.get_run(run_id)
 
