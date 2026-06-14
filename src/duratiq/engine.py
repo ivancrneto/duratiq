@@ -196,6 +196,22 @@ class Engine:
                     session=session,
                 )
 
+            # Record patch markers from ctx.patched(). Like side effects they are born
+            # COMPLETED — the decision was made in this tick — so replay returns True
+            # at this seq forever after, while runs that predate the patch (which have
+            # no marker here) keep returning False.
+            for sp in ctx.scheduled_patches:
+                self.store.create_step(
+                    run_id,
+                    sp.seq,
+                    kind="PATCH",
+                    name=sp.patch_id,
+                    input=None,
+                    status="COMPLETED",
+                    result={"value": True},
+                    session=session,
+                )
+
             # Record newly-scheduled child workflows. The sub-run itself is started
             # post-commit (like an activity dispatch), so we never spawn a child for
             # a step that got rolled back.
