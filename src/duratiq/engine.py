@@ -408,6 +408,8 @@ class Engine:
                 self.store.cancel_timer(run_id, seq, session=session)
             for seq in ctx.cancelled_waits:
                 self.store.cancel_wait(run_id, seq, session=session)
+            for seq in ctx.cancelled_activities:
+                self.store.cancel_activity(run_id, seq, session=session)
 
             # Record side-effect values computed during the replay. They are born
             # COMPLETED — the value was produced in this tick, not awaited — and

@@ -309,8 +309,8 @@ class SqlStore:
     ) -> None:
         def _apply(s: Session) -> None:
             step = s.get(WorkflowStep, (run_id, seq))
-            if step is None:
-                return
+            if step is None or step.status == "CANCELLED":
+                return  # a cancelled branch (lost a select race) stays cancelled
             step.status = status
             step.result = result
             step.error = error
@@ -421,6 +421,17 @@ class SqlStore:
         Marks the SIGNAL_WAIT step CANCELLED so ``match_signals`` — which only pairs
         SCHEDULED waits — leaves a late signal queued for a later wait instead of
         silently consuming it here."""
+        step = session.get(WorkflowStep, (run_id, seq))
+        if step is not None and step.status == "SCHEDULED":
+            step.status = "CANCELLED"
+            step.completed_at = utcnow()
+
+    def cancel_activity(self, run_id: str, seq: int, *, session: Session) -> None:
+        """Cancel a still-pending activity branch that lost a ``ctx.select`` race.
+
+        Marks the ACTIVITY step CANCELLED. The dispatched message may still run on a
+        worker, but :meth:`complete_step` won't resurrect a CANCELLED step, so its
+        result is dropped — the select's winner stays fixed across replays."""
         step = session.get(WorkflowStep, (run_id, seq))
         if step is not None and step.status == "SCHEDULED":
             step.status = "CANCELLED"

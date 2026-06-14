@@ -128,6 +128,20 @@ class DeferredCall:
     kwargs: dict
 
 
+@dataclass
+class DeferredTimer:
+    """A timer branch for :meth:`WorkflowContext.select`, built by ``ctx.defer_timer``."""
+
+    duration: float | str
+
+
+@dataclass
+class DeferredSignal:
+    """A signal branch for :meth:`WorkflowContext.select`, built by ``ctx.defer_signal``."""
+
+    name: str
+
+
 class WorkflowContext:
     def __init__(self, run_id: str, steps: list) -> None:
         self.run_id = run_id
@@ -138,10 +152,11 @@ class WorkflowContext:
         self.scheduled_side_effects: list[ScheduledSideEffect] = []
         self.scheduled_patches: list[ScheduledPatch] = []
         self.scheduled_children: list[ScheduledChild] = []
-        # Seqs of the losing side of a wait_signal(timeout=...) race to cancel in this
-        # tick's transaction: the timer if the signal won, the wait if it timed out.
+        # Seqs of the losing side of a wait_signal(timeout=...) race or a ctx.select to
+        # cancel in this tick's transaction (timer / signal-wait / activity branches).
         self.cancelled_timers: list[int] = []
         self.cancelled_waits: list[int] = []
+        self.cancelled_activities: list[int] = []
         # Read-only handlers registered via set_query_handler; invoked by engine.query
         # after a side-effect-free replay. Populated on every tick but only read by a
         # query, so registering one is free during normal execution.
@@ -603,3 +618,108 @@ class WorkflowContext:
         if all_done:
             return results
         raise Suspend()
+
+    def defer_timer(self, duration: float | str) -> DeferredTimer:
+        """Build a timer branch for :meth:`select` (a deadline, not yet started)."""
+        return DeferredTimer(duration=duration)
+
+    def defer_signal(self, name: str) -> DeferredSignal:
+        """Build a signal branch for :meth:`select` (a wait, not yet started)."""
+        return DeferredSignal(name=name)
+
+    def select(self, *branches: "DeferredCall | DeferredTimer | DeferredSignal") -> tuple[int, Any]:
+        """Wait for the **first** of several branches to resolve, and return it.
+
+        Branches are built with :meth:`defer` (an activity), :meth:`defer_timer` (a
+        deadline), and :meth:`defer_signal` (a signal). All are armed together on first
+        encounter; the workflow suspends until one resolves, then ``select`` returns
+        ``(index, value)`` — the index of the winning branch and its value (the
+        activity result, the signal payload, or ``None`` for a timer). A winning
+        activity that *failed* re-raises its error.
+
+            idx, value = ctx.select(
+                ctx.defer(charge, order_id),     # 0: activity result
+                ctx.defer_signal("cancel"),      # 1: signal payload
+                ctx.defer_timer("PT1H"),         # 2: timed out -> None
+            )
+
+        Ties break by branch order, and the losing branches that are still pending are
+        **cancelled** — so the decision is fixed forever (a late activity result or
+        signal can't flip it on replay). A cancelled activity's message may still run on
+        a worker; its result is dropped, so activities in a select must be safe to
+        abandon."""
+        if not branches:
+            raise ValueError("select() needs at least one branch")
+        seqs = [self._next_seq() for _ in branches]
+        steps = [self._history.get(seq) for seq in seqs]
+        for i, (branch, step) in enumerate(zip(branches, steps)):
+            if step is not None:
+                self._check_branch_kind(branch, step, seqs[i], i)
+
+        winner = next(
+            (i for i, step in enumerate(steps) if step is not None and step.status in ("COMPLETED", "FAILED")),
+            None,
+        )
+        if winner is not None:
+            for i, step in enumerate(steps):
+                if i != winner and step is not None and step.status == "SCHEDULED":
+                    self._cancel_branch(branches[i], seqs[i])
+            return winner, self._branch_value(branches[winner], steps[winner])
+
+        if all(step is None for step in steps):
+            for branch, seq in zip(branches, seqs):
+                self._schedule_branch(branch, seq)
+        raise Suspend()
+
+    # --- select branch helpers ------------------------------------------------
+    @staticmethod
+    def _branch_kind(branch: Any) -> str:
+        return {DeferredCall: "ACTIVITY", DeferredTimer: "TIMER", DeferredSignal: "SIGNAL_WAIT"}[type(branch)]
+
+    def _check_branch_kind(self, branch: Any, step: Any, seq: int, index: int) -> None:
+        expected = self._branch_kind(branch)
+        if step.kind != expected:
+            raise DeterminismError(
+                f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, but "
+                f"select branch {index} is a {expected}. Did the workflow code change?"
+            )
+        wanted = branch.activity.name if isinstance(branch, DeferredCall) else getattr(branch, "name", step.name)
+        if step.name != wanted:
+            raise DeterminismError(
+                f"replay divergence at seq {seq}: history recorded {step.name!r}, but select "
+                f"branch {index} expected {wanted!r}. Did the workflow code change?"
+            )
+
+    def _schedule_branch(self, branch: Any, seq: int) -> None:
+        if isinstance(branch, DeferredCall):
+            a = branch.activity
+            self.scheduled.append(
+                ScheduledActivity(
+                    seq=seq,
+                    name=a.name,
+                    args=list(branch.args),
+                    kwargs=dict(branch.kwargs),
+                    max_retries=a.max_retries,
+                    start_to_close_ms=a.start_to_close_ms,
+                    heartbeat_timeout_ms=a.heartbeat_timeout_ms,
+                )
+            )
+        elif isinstance(branch, DeferredTimer):
+            self.scheduled_timers.append(ScheduledTimer(seq=seq, delay_seconds=duration_seconds(branch.duration)))
+        else:  # DeferredSignal
+            self.scheduled_waits.append(ScheduledWait(seq=seq, name=branch.name))
+
+    def _cancel_branch(self, branch: Any, seq: int) -> None:
+        if isinstance(branch, DeferredCall):
+            self.cancelled_activities.append(seq)
+        elif isinstance(branch, DeferredTimer):
+            self.cancelled_timers.append(seq)
+        else:  # DeferredSignal
+            self.cancelled_waits.append(seq)
+
+    def _branch_value(self, branch: Any, step: Any) -> Any:
+        if step.status == "FAILED":
+            raise ActivityFailed(branch.activity.name, step.error)  # only activities fail
+        if isinstance(branch, DeferredTimer):
+            return None
+        return (step.result or {}).get("value")  # activity result or signal payload

@@ -321,6 +321,30 @@ call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
 
+## Select (race the first to resolve)
+
+Where `gather` waits for **all**, `ctx.select` waits for the **first** of several
+branches and returns it — an activity result, a signal, or a timer (a timeout). It
+generalises `wait_signal(timeout=...)` to any mix:
+
+```python
+idx, value = ctx.select(
+    ctx.defer(charge, order_id),     # 0: the charge succeeds -> its result
+    ctx.defer_signal("cancel"),      # 1: the customer cancels -> the payload
+    ctx.defer_timer("PT15M"),        # 2: the window expires   -> None
+)
+outcome = ["charged", "cancelled", "expired"][idx]
+```
+
+All branches arm together; the workflow suspends until one resolves, then `select`
+returns `(index, value)` (a winning activity that *failed* re-raises). Ties break by
+branch order, and the still-pending losers are **cancelled** — the timer dropped, the
+signal-wait abandoned (so a late signal isn't swallowed), the activity step CANCELLED
+(its result discarded if it lands later). That makes the decision **fixed across
+replays**: a result that arrives after the race resolved can't flip the winner. Since
+a cancelled activity's message may still run on a worker, activities in a `select`
+must be safe to abandon. (Racing child workflows isn't supported yet — a fast-follow.)
+
 ## Continue-as-new
 
 Each tick replays from the top, so a workflow that loops forever — an event loop
