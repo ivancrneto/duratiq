@@ -81,7 +81,14 @@ class Engine:
             pass
 
     # --------------------------------------------------------------- client
-    def start(self, name: str, *, idempotency_key: str | None = None, **kwargs: Any) -> str:
+    def start(
+        self,
+        name: str,
+        *,
+        idempotency_key: str | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str:
         wf = self.registry.get_workflow(name)  # validate name early
         if idempotency_key:
             existing = self.store.find_by_idempotency_key(idempotency_key)
@@ -95,6 +102,8 @@ class Engine:
             input=kwargs,
             idempotency_key=idempotency_key,
         )
+        if search_attributes:
+            self.store.upsert_search_attributes(run_id, search_attributes)
         self._emit(events.RUN_STARTED, run_id, name=name)
         self.driver.request_tick(run_id)
         return run_id
@@ -143,24 +152,43 @@ class Engine:
         *,
         status: "str | list[str] | None" = None,
         name: str | None = None,
+        search_attributes: dict[str, Any] | None = None,
         limit: int = 50,
         offset: int = 0,
         newest_first: bool = True,
     ) -> list[WorkflowRun]:
-        """List runs, newest first, optionally filtered by status and/or workflow name.
+        """List runs, newest first, optionally filtered by status, name, and attributes.
 
         ``status`` accepts a single status (``"RUNNING"``) or a list
-        (``["FAILED", "CANCELLED"]``). ``limit`` is clamped to ``[1, 1000]``; page with
-        ``offset``. Pair with :meth:`count_runs` for a total. This is the read side an
-        admin/ops view is built on.
+        (``["FAILED", "CANCELLED"]``). ``search_attributes`` is an AND of equality
+        matches (``{"region": "eu", "priority": 1}``). ``limit`` is clamped to
+        ``[1, 1000]``; page with ``offset``. Pair with :meth:`count_runs` for a total.
+        This is the read side an admin/ops view is built on.
         """
         limit = max(1, min(limit, 1000))
         offset = max(0, offset)
-        return self.store.list_runs(status=status, name=name, limit=limit, offset=offset, newest_first=newest_first)
+        return self.store.list_runs(
+            status=status,
+            name=name,
+            search_attributes=search_attributes,
+            limit=limit,
+            offset=offset,
+            newest_first=newest_first,
+        )
 
-    def count_runs(self, *, status: "str | list[str] | None" = None, name: str | None = None) -> int:
+    def count_runs(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        search_attributes: dict[str, Any] | None = None,
+    ) -> int:
         """Total runs matching the filters (the unpaginated count behind ``list_runs``)."""
-        return self.store.count_runs(status=status, name=name)
+        return self.store.count_runs(status=status, name=name, search_attributes=search_attributes)
+
+    def get_search_attributes(self, run_id: str) -> dict:
+        """Return a run's search attributes as a ``{key: value}`` dict (empty if none)."""
+        return self.store.get_search_attributes(run_id)
 
     def query(self, run_id: str, name: str, *args: Any, **kwargs: Any) -> Any:
         """Read a running (or finished) workflow's computed state, without advancing it.
@@ -368,6 +396,10 @@ class Engine:
                 self.store.record_update_result(
                     applied.update_id, result=applied.result, error=applied.error, session=session
                 )
+
+            # Persist any search attributes the workflow upserted this replay (idempotent).
+            if ctx.upserted_search_attributes:
+                self.store.upsert_search_attributes(run_id, ctx.upserted_search_attributes, session=session)
 
             # Cancel the losing side of any resolved wait_signal(timeout=...) race so
             # it can't fire/match later: the timer if the signal won, the wait if it

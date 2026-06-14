@@ -20,6 +20,9 @@ The tables are the heart of the engine:
 * ``workflow_updates`` — the inbox for ``engine.update``. Each row is a synchronous,
   mutating request; the workflow consumes it at a ``ctx.wait_update`` point, runs its
   handler, and the handler's result/error is recorded here for the caller to read.
+* ``workflow_search_attributes`` — typed, indexed key/value metadata on a run, set at
+  start or via ``ctx.upsert_search_attributes``. ``engine.list_runs`` filters on them
+  (e.g. ``region="eu"``) for an ops view richer than status/name.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .codec import CodecJSON
@@ -198,3 +201,21 @@ class WorkflowUpdate(Base):
     error: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class WorkflowSearchAttribute(Base):
+    """One typed, indexed metadata value on a run — a ``(run_id, key)`` map entry.
+
+    Set at start or via ``ctx.upsert_search_attributes`` (one row per key; upsert
+    replaces). ``value`` is the typed value read back verbatim; ``value_index`` is its
+    canonical string form, indexed with ``key`` so ``engine.list_runs`` can filter
+    efficiently (``WHERE key = 'region' AND value_index = '"eu"'``)."""
+
+    __tablename__ = "workflow_search_attributes"
+    # Filtering is "find runs where key=K has value V", so index (key, value_index).
+    __table_args__ = (Index("ix_workflow_search_attributes_key_value", "key", "value_index"),)
+
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    value: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    value_index: Mapped[str] = mapped_column(String(255))

@@ -567,6 +567,30 @@ engine.count_runs(status="FAILED")                  # total behind the page
 `status` takes a single status or a list; `limit` is clamped to `[1, 1000]`. Pair
 `list_runs` with `count_runs` (same filters, no paging) to drive pagination.
 
+## Search attributes
+
+Filtering by status and name only goes so far. **Search attributes** are typed,
+indexed metadata you attach to a run — `region`, `customer`, `priority` — then filter
+on, for an ops view like "FAILED high-priority EU orders":
+
+```python
+engine.start("order", order_id="A1", search_attributes={"region": "eu", "priority": 1})
+
+# or from inside the workflow, set/update them as state changes:
+def order(ctx, ...):
+    ctx.upsert_search_attributes({"region": "eu", "stage": "shipped"})
+
+engine.list_runs(status="FAILED", search_attributes={"region": "eu", "priority": 1})
+engine.count_runs(search_attributes={"region": "eu"})
+engine.get_search_attributes(run_id)        # -> {"region": "eu", "priority": 1}
+```
+
+Each `search_attributes` filter is an **equality** match and they **AND** together; a
+value matches by type (`priority=1` ≠ `priority="1"`). Attributes are stored one
+indexed row per `(run, key)` in `workflow_search_attributes`, so filtering is a real
+indexed query, not a scan — and `upsert_search_attributes` replaces a key in place
+(re-applied idempotently on every replay).
+
 ## Payload codec
 
 Every workflow input, result, step payload, and signal is memoized as JSON in

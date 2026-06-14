@@ -153,6 +153,9 @@ class WorkflowContext:
         self.scheduled_update_waits: list[ScheduledUpdateWait] = []
         # Results to write back to update rows after the tick's replay (idempotent).
         self.applied_updates: list[AppliedUpdate] = []
+        # Search attributes set during this tick via upsert_search_attributes; the engine
+        # writes them after the replay (re-writing the same values is idempotent).
+        self.upserted_search_attributes: dict[str, Any] = {}
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -200,6 +203,17 @@ class WorkflowContext:
         without consuming the update. Consumes no ``seq``.
         """
         self.update_validators[name] = validator
+
+    def upsert_search_attributes(self, attributes: dict[str, Any]) -> None:
+        """Set or update this run's search attributes from inside the workflow.
+
+        Search attributes are typed, indexed metadata (``region``, ``customer``,
+        ``priority``, ...) that ``engine.list_runs`` filters on. Pass a ``{key: value}``
+        dict; keys not mentioned are left as they are. The engine writes them after the
+        tick's replay, so re-running on replay just re-applies the same values — it
+        consumes no ``seq`` and never suspends.
+        """
+        self.upserted_search_attributes.update(attributes)
 
     def activity(self, activity: Activity, *args: Any, **kwargs: Any) -> Any:
         """Run an activity durably.
