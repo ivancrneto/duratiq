@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import Engine as SaEngine
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base, WorkflowRun, WorkflowSchedule, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
@@ -80,6 +80,23 @@ class SqlStore:
                 )
             )
 
+    def find_active_children(self, parent_run_id: str) -> list[str]:
+        """Return the ids of this run's non-terminal child runs.
+
+        Used by cancellation to cascade: a parent coming down takes its still-running
+        children with it. Terminal children (already done/failed/cancelled) are left
+        as they are.
+        """
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id).where(
+                        WorkflowRun.parent_run_id == parent_run_id,
+                        WorkflowRun.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                    )
+                )
+            )
+
     def get_run(self, run_id: str, *, session: Session | None = None) -> WorkflowRun | None:
         if session is not None:
             return session.get(WorkflowRun, run_id)
@@ -104,6 +121,28 @@ class SqlStore:
         else:
             with self.Session.begin() as s:
                 _apply(s)
+
+    def continue_as_new(self, run_id: str, *, new_input: dict, session: Session) -> None:
+        """Truncate a run's history and restart it with fresh input (same run id).
+
+        Deletes every step, every timer, and every *consumed* signal, then resets the
+        run to PENDING with ``new_input`` and a cleared result/error — a clean slate
+        for the next iteration. Unconsumed signals are intentionally left in place so
+        they carry over and are matched by the new iteration's waits. Runs inside the
+        caller's locked-tick transaction, so the truncate + reset is atomic.
+        """
+        session.execute(delete(WorkflowStep).where(WorkflowStep.run_id == run_id))
+        session.execute(delete(WorkflowTimer).where(WorkflowTimer.run_id == run_id))
+        session.execute(
+            delete(WorkflowSignal).where(WorkflowSignal.run_id == run_id, WorkflowSignal.consumed_seq.is_not(None))
+        )
+        run = session.get(WorkflowRun, run_id)
+        if run is not None:
+            run.input = new_input
+            run.status = "PENDING"
+            run.result = None
+            run.error = None
+            run.updated_at = utcnow()
 
     # ----------------------------------------------------------------- steps
     def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:

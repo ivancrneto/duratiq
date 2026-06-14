@@ -8,9 +8,10 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
-> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus recurring
-> cron schedules (`engine.create_schedule`). Fast-follow items (`continue-as-new`,
-> `ctx.patched` versioning) remain.
+> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
+> `continue-as-new` (`ctx.continue_as_new`) for long-running loops, `ctx.patched`
+> versioning for safely evolving deployed workflow code, and recurring cron schedules
+> (`engine.create_schedule`).
 
 ## The idea
 
@@ -132,6 +133,24 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
+**Signal-with-start.** `engine.signal_with_start(name, signal=..., payload=...,
+idempotency_key=...)` delivers a signal to a run, starting it first if it doesn't
+exist yet. Dedupe on `idempotency_key`: the first call starts the workflow, every
+later call just signals the running one. It's the right primitive for "ensure a
+per-entity workflow is running, then nudge it" — e.g. a per-customer cart workflow
+you signal on every add-to-cart, starting it on the first:
+
+```python
+# first add-to-cart starts the cart workflow and delivers the item;
+# every later one signals the same run (same idempotency_key -> same run id).
+run_id = engine.signal_with_start(
+    "cart", signal="add_item", payload={"sku": "A1"}, idempotency_key=f"cart:{customer_id}",
+)
+```
+
+The signal is queued before the first tick, so the run's `ctx.wait_signal` finds it
+already waiting — no race against the start.
+
 ## Side effects
 
 Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or
@@ -172,6 +191,33 @@ call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
 
+## Continue-as-new
+
+Each tick replays from the top, so a workflow that loops forever — an event loop
+draining a queue, a long poll — accumulates step history without bound.
+`ctx.continue_as_new(**kwargs)` ends the current iteration and restarts the run
+*as if freshly started* with new input and an **empty history**, keeping the same
+run id:
+
+```python
+@workflow(name="poller", registry=reg)
+def poller(ctx, cursor, processed):
+    batch = ctx.activity(fetch_since, cursor)
+    for item in batch:
+        ctx.activity(handle, item)
+    ctx.sleep("PT1M")
+    # Restart with a fresh history instead of growing it forever.
+    ctx.continue_as_new(cursor=batch.next_cursor, processed=processed + len(batch))
+```
+
+Reaching the call means every prior `ctx` step in this iteration already completed,
+so there is nothing in flight to lose. The engine truncates the run's steps, fired
+timers, and consumed signals, then re-ticks it from seq 0 with the carried input.
+**Signals that haven't been consumed yet carry over** to the next iteration, so a
+queue-draining loop never drops a queued event across the restart. Like the other
+control-flow points, it survives a crash: the reset commits atomically with the
+tick, so recovery just resumes the new iteration.
+
 ## Child workflows
 
 `ctx.child_workflow` runs another workflow as a sub-run and returns its result —
@@ -192,8 +238,10 @@ parent, so the result is memoized and survives replay. A child that fails — or
 cancelled — raises `ChildWorkflowFailed` in the parent, where it can be caught or
 left to fail the parent (just like a failed `ctx.activity`). Starting a child is
 idempotent on `(parent_run_id, parent_seq)`, so a crash between committing the step
-and starting the sub-run is recovered without spawning a duplicate. (Cancelling a
-parent does not yet cascade to its children — a fast-follow item.)
+and starting the sub-run is recovered without spawning a duplicate. Cancelling a
+parent **cascades**: its still-running children (and theirs) are cancelled too;
+cancelling a child directly instead fails the parent's `child_workflow` so it
+doesn't wait forever.
 
 ## Retries
 
@@ -214,6 +262,30 @@ exponential backoff, and recording FAILED only on the final attempt (no
 dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
 (and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
+## Versioning with patches
+
+Because replay matches recorded history by position, changing a deployed workflow's
+code can diverge its in-flight runs (`DeterminismError`). `ctx.patched` is the safe
+way to ship a change: wrap the new behaviour, leave the old in the `else`.
+
+```python
+@workflow(name="checkout", registry=reg)
+def checkout(ctx, order_id):
+    payment = ctx.activity(charge_card, order_id)
+    if ctx.patched("send-receipt-v2"):
+        ctx.activity(send_receipt_v2, order_id)   # new runs take this
+    else:
+        ctx.activity(send_receipt, order_id)      # runs that predate the patch keep this
+    return payment
+```
+
+The decision is fixed per call site and replayed stably. A **new run** records a
+patch marker and returns `True`; a run that **already executed past this point**
+under the old code has a real command where the marker would sit, so `patched`
+returns `False` and — without consuming a position — lets the old branch realign
+with history. Once every pre-patch run has drained you can delete the old branch;
+removing the `patched` call entirely is safe only after that.
+
 ## Recovery
 
 A tick is atomic under a per-run advisory lock, so a worker that dies mid-tick
@@ -225,8 +297,38 @@ idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
 re-suspends. (Lost *activity* messages are recovered by the broker's own
 redelivery.)
 
+## Payload codec
+
+Every workflow input, result, step payload, and signal is memoized as JSON in
+Postgres. Large payloads bloat that history, and some shouldn't live in the database
+at all. A **payload codec** is the seam to intervene — compress them, or offload big
+blobs to S3 and store only a reference — applied transparently at the storage layer,
+so neither the engine nor workflow code changes:
+
+```python
+from duratiq import PayloadCodec, set_payload_codec
+
+class S3OffloadingCodec:
+    def encode(self, value):                 # on the way into the DB
+        blob = json.dumps(value).encode()
+        if len(blob) < 8_000:
+            return value                      # small: store inline
+        key = s3_put(blob)
+        return {"__s3__": key}                # large: store a reference
+    def decode(self, value):                  # on the way back out
+        if isinstance(value, dict) and "__s3__" in value:
+            return json.loads(s3_get(value["__s3__"]))
+        return value
+
+set_payload_codec(S3OffloadingCodec())        # once, at startup
+```
+
+The codec must round-trip (`decode(encode(v)) == v`) and `encode` must return
+something JSON-serialisable. The default is a pass-through `IdentityCodec`, so
+nothing changes until you install one. It's process-global — set it once before
+starting the engine.
+
 ## What's next (from the plan)
 
-The fast-follow items still open: `continue-as-new` (history truncation for long
-loops), `ctx.patched` versioning for safely changing in-flight workflow code,
-signal-with-start, and parent→child cancellation cascade.
+The fast-follow items still open: signal-with-start, and parent→child cancellation
+cascade.
