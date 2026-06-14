@@ -67,9 +67,7 @@ class DramatiqDriver:
     def request_tick(self, run_id: str) -> None:
         self._tick_actor.send(run_id)
 
-    def dispatch_activity(
-        self, run_id: str, seq: int, name: str, args: list, kwargs: dict, max_retries: int
-    ) -> None:
+    def dispatch_activity(self, run_id: str, seq: int, name: str, args: list, kwargs: dict, max_retries: int) -> None:
         activity = self.engine.registry.get_activity(name)
         options: dict = {"max_retries": max_retries}
         if activity.min_backoff_ms is not None:
