@@ -57,7 +57,7 @@ def test_crash_mid_run_resumes_without_re_executing(ns: SimpleNamespace) -> None
     run_id = ns.engine.start("pipeline", start=5)
 
     # Pump just far enough to finish the first activity, then "crash".
-    assert ns.driver.step() == "tick"      # schedules step_a, run suspends
+    assert ns.driver.step() == "tick"  # schedules step_a, run suspends
     assert ns.driver.step() == "activity"  # runs step_a once, records result, queues a tick
     assert ns.calls["a"] == 1
     assert ns.calls["b"] == 0

@@ -35,6 +35,21 @@ class ActivityFailed(Exception):
         super().__init__(f"activity {activity!r} failed: {message}")
 
 
+class ChildWorkflowFailed(Exception):
+    """Raised during replay when a memoized child-workflow step is in FAILED state.
+
+    A child run that ends FAILED or CANCELLED records its parent's CHILD_WORKFLOW
+    step as FAILED; the parent then raises this on replay, where it can be caught or
+    left to fail the parent run — exactly like :class:`ActivityFailed`.
+    """
+
+    def __init__(self, workflow: str, error: dict | None) -> None:
+        self.workflow = workflow
+        self.error = error or {}
+        message = self.error.get("message", "child workflow failed")
+        super().__init__(f"child workflow {workflow!r} failed: {message}")
+
+
 class WorkflowNotFound(Exception):
     """Raised when a run references a workflow name absent from the registry."""
 

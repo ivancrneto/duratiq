@@ -11,8 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, NoReturn
 
-from .exceptions import ActivityFailed, ContinueAsNew, DeterminismError, Suspend
-from .registry import Activity
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend
+from .registry import Activity, Workflow
 
 # ISO-8601 duration subset: P[nD]T[nH][nM][nS], e.g. "PT10M", "P1DT6H".
 _ISO_DURATION = re.compile(
@@ -30,6 +30,21 @@ def duration_seconds(duration: float | str) -> float:
         raise ValueError(f"invalid duration {duration!r}: expected seconds or ISO-8601 (e.g. 'PT10M')")
     days, hours, minutes, seconds = (float(part) if part else 0.0 for part in match.groups())
     return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
+
+
+def _workflow_name(workflow: "str | Workflow | Any") -> str:
+    """Resolve a child-workflow reference to its registered name.
+
+    Accepts the name string, a :class:`Workflow`, or a function decorated with
+    ``@workflow`` (which carries its registration on ``__duratiq_workflow__``)."""
+    if isinstance(workflow, str):
+        return workflow
+    if isinstance(workflow, Workflow):
+        return workflow.name
+    wf = getattr(workflow, "__duratiq_workflow__", None)
+    if isinstance(wf, Workflow):
+        return wf.name
+    raise TypeError(f"child_workflow expected a workflow name, a @workflow function, or a Workflow, got {workflow!r}")
 
 
 @dataclass
@@ -60,6 +75,13 @@ class ScheduledSideEffect:
 
 
 @dataclass
+class ScheduledChild:
+    seq: int
+    name: str
+    input: dict
+
+
+@dataclass
 class DeferredCall:
     """An activity call built by :meth:`WorkflowContext.defer` but not yet started.
 
@@ -80,6 +102,7 @@ class WorkflowContext:
         self.scheduled_timers: list[ScheduledTimer] = []
         self.scheduled_waits: list[ScheduledWait] = []
         self.scheduled_side_effects: list[ScheduledSideEffect] = []
+        self.scheduled_children: list[ScheduledChild] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -223,6 +246,45 @@ class WorkflowContext:
         iteration already completed, so there is no pending work to lose.
         """
         raise ContinueAsNew(dict(kwargs))
+
+    def child_workflow(self, workflow: "str | Workflow | Any", **kwargs: Any) -> Any:
+        """Run another workflow as a child and return its result.
+
+        On first encounter the child run is started and the parent suspends; when the
+        child reaches a terminal state the parent is re-ticked and ``child_workflow``
+        returns the child's result (or raises :class:`ChildWorkflowFailed` if it
+        failed or was cancelled). On every later replay the memoized result is
+        returned without re-running the child.
+
+        ``workflow`` may be the registered name, a function decorated with
+        ``@workflow``, or a :class:`Workflow`. Arguments are keyword-only, mirroring
+        ``engine.start``.
+        """
+        name = _workflow_name(workflow)
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is not None:
+            if step.kind != "CHILD_WORKFLOW":
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, "
+                    f"but the workflow called ctx.child_workflow(). Did the workflow code change?"
+                )
+            if step.name != name:
+                raise DeterminismError(
+                    f"replay divergence at seq {seq}: history started child {step.name!r}, "
+                    f"but the workflow now starts {name!r}. Did the workflow code change?"
+                )
+            if step.status == "COMPLETED":
+                return (step.result or {}).get("value")
+            if step.status == "FAILED":
+                raise ChildWorkflowFailed(name, step.error)
+            # SCHEDULED — the child run has not reached a terminal state yet.
+            raise Suspend()
+
+        # Not in history: schedule the child (the engine starts the sub-run post-commit).
+        self.scheduled_children.append(ScheduledChild(seq=seq, name=name, input=dict(kwargs)))
+        raise Suspend()
 
     def defer(self, activity: Activity, *args: Any, **kwargs: Any) -> DeferredCall:
         """Build an activity call without starting it, for use with :meth:`gather`.

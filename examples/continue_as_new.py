@@ -47,8 +47,10 @@ def main() -> None:
     driver.run_until_idle()
 
     run = engine.get(run_id)
-    print(f"\nafter 3 jobs the run is {run.status}; history holds "
-          f"{len(store.get_steps(run_id))} step(s) — not 3+ iterations' worth")
+    print(
+        f"\nafter 3 jobs the run is {run.status}; history holds "
+        f"{len(store.get_steps(run_id))} step(s) — not 3+ iterations' worth"
+    )
     assert run.status == "SUSPENDED"
     # The whole history is just the current iteration's single pending wait.
     assert len(store.get_steps(run_id)) == 1

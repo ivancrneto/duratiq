@@ -53,7 +53,7 @@ def test_side_effect_runs_once_across_crash(ns: SimpleNamespace) -> None:
     run_id = ns.engine.start("with_id")
 
     # Pump just far enough to compute the side effect + schedule the activity, then crash.
-    assert ns.driver.step() == "tick"      # side_effect computed (id-1), activity scheduled, suspends
+    assert ns.driver.step() == "tick"  # side_effect computed (id-1), activity scheduled, suspends
     assert ns.driver.step() == "activity"  # activity runs
     assert ns.counter["gen"] == 1
     assert ns.store.get_run(run_id).status == "SUSPENDED"
