@@ -324,26 +324,27 @@ that's why `defer` exists.)
 ## Select (race the first to resolve)
 
 Where `gather` waits for **all**, `ctx.select` waits for the **first** of several
-branches and returns it — an activity result, a signal, or a timer (a timeout). It
-generalises `wait_signal(timeout=...)` to any mix:
+branches and returns it — an activity result, a signal, a timer (a timeout), or a
+child workflow. It generalises `wait_signal(timeout=...)` to any mix:
 
 ```python
 idx, value = ctx.select(
-    ctx.defer(charge, order_id),     # 0: the charge succeeds -> its result
-    ctx.defer_signal("cancel"),      # 1: the customer cancels -> the payload
-    ctx.defer_timer("PT15M"),        # 2: the window expires   -> None
+    ctx.defer(charge, order_id),        # 0: the charge succeeds -> its result
+    ctx.defer_child("manual_review"),   # 1: a review sub-workflow -> its result
+    ctx.defer_signal("cancel"),         # 2: the customer cancels  -> the payload
+    ctx.defer_timer("PT15M"),           # 3: the window expires    -> None
 )
-outcome = ["charged", "cancelled", "expired"][idx]
 ```
 
 All branches arm together; the workflow suspends until one resolves, then `select`
-returns `(index, value)` (a winning activity that *failed* re-raises). Ties break by
-branch order, and the still-pending losers are **cancelled** — the timer dropped, the
-signal-wait abandoned (so a late signal isn't swallowed), the activity step CANCELLED
-(its result discarded if it lands later). That makes the decision **fixed across
-replays**: a result that arrives after the race resolved can't flip the winner. Since
-a cancelled activity's message may still run on a worker, activities in a `select`
-must be safe to abandon. (Racing child workflows isn't supported yet — a fast-follow.)
+returns `(index, value)` (a winning activity or child that *failed* re-raises). Ties
+break by branch order, and the still-pending losers are **cancelled** — the timer
+dropped, the signal-wait abandoned (so a late signal isn't swallowed), the activity
+step CANCELLED (its result discarded if it lands later), and a child branch's **sub-run
+cancelled** (cascading to its own children). That makes the decision **fixed across
+replays**: a result that arrives after the race resolved can't flip the winner. Since a
+cancelled activity's message may still run on a worker, branches in a `select` must be
+safe to abandon.
 
 ## Continue-as-new
 
