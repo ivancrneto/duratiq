@@ -38,21 +38,21 @@ def loyalty_points(order_id: str) -> str:
 
 
 def checkout_old(ctx, order_id: str) -> dict:
-    pay = ctx.activity(charge, order_id)          # seq 0
-    note = ctx.activity(notify, order_id)          # seq 1  (in-flight run records this)
-    ctx.wait_signal("ship")                        # seq 2  (suspends here)
+    pay = ctx.activity(charge, order_id)  # seq 0
+    note = ctx.activity(notify, order_id)  # seq 1  (in-flight run records this)
+    ctx.wait_signal("ship")  # seq 2  (suspends here)
     return {"mode": "old", "pay": pay, "note": note}
 
 
 def checkout_new(ctx, order_id: str) -> dict:
-    pay = ctx.activity(charge, order_id)          # seq 0
-    if ctx.patched("award-loyalty"):               # peek seq 1: old run has a real cmd -> False
+    pay = ctx.activity(charge, order_id)  # seq 0
+    if ctx.patched("award-loyalty"):  # peek seq 1: old run has a real cmd -> False
         pts = ctx.activity(loyalty_points, order_id)
         note = ctx.activity(notify, order_id)
         ctx.wait_signal("ship")
         return {"mode": "new", "pay": pay, "pts": pts, "note": note}
-    note = ctx.activity(notify, order_id)          # seq 1 (old runs realign here)
-    ctx.wait_signal("ship")                        # seq 2
+    note = ctx.activity(notify, order_id)  # seq 1 (old runs realign here)
+    ctx.wait_signal("ship")  # seq 2
     return {"mode": "old", "pay": pay, "note": note}
 
 

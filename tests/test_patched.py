@@ -36,8 +36,9 @@ def ns() -> SimpleNamespace:
     store.create_all()
     engine = Engine(reg, store)
     driver = LocalDriver(engine)
-    return SimpleNamespace(reg=reg, store=store, engine=engine, driver=driver,
-                           step_a=step_a, step_b=step_b, step_c=step_c)
+    return SimpleNamespace(
+        reg=reg, store=store, engine=engine, driver=driver, step_a=step_a, step_b=step_b, step_c=step_c
+    )
 
 
 def test_patched_true_on_new_run(ns: SimpleNamespace) -> None:
@@ -64,9 +65,9 @@ def test_patched_false_for_old_inflight_run(ns: SimpleNamespace) -> None:
 
     # 1) Old code: a -> b -> wait, registered as "evolve".
     def evolve_old(ctx) -> dict:
-        a = ctx.activity(ns.step_a)         # seq 0
-        b = ctx.activity(ns.step_b)         # seq 1
-        d = ctx.wait_signal("finish")       # seq 2 (suspends here)
+        a = ctx.activity(ns.step_a)  # seq 0
+        b = ctx.activity(ns.step_b)  # seq 1
+        d = ctx.wait_signal("finish")  # seq 2 (suspends here)
         return {"mode": "old", "a": a, "b": b, "d": d}
 
     ns.reg.add_workflow(Workflow(fn=evolve_old, name="evolve"))
@@ -81,13 +82,13 @@ def test_patched_false_for_old_inflight_run(ns: SimpleNamespace) -> None:
     # 2) Deploy new code: insert a patch gate after step_a. New runs would do step_c
     #    instead of step_b; old runs must still do step_b.
     def evolve_new(ctx) -> dict:
-        a = ctx.activity(ns.step_a)             # seq 0
-        if ctx.patched("swap-b-for-c"):         # peeks seq 1 -> real ACTIVITY -> False
+        a = ctx.activity(ns.step_a)  # seq 0
+        if ctx.patched("swap-b-for-c"):  # peeks seq 1 -> real ACTIVITY -> False
             c = ctx.activity(ns.step_c)
             d = ctx.wait_signal("finish")
             return {"mode": "new", "a": a, "c": c, "d": d}
-        b = ctx.activity(ns.step_b)             # seq 1 (realigns with history)
-        d = ctx.wait_signal("finish")           # seq 2
+        b = ctx.activity(ns.step_b)  # seq 1 (realigns with history)
+        d = ctx.wait_signal("finish")  # seq 2
         return {"mode": "old", "a": a, "b": b, "d": d}
 
     ns.reg.add_workflow(Workflow(fn=evolve_new, name="evolve"))

@@ -7,10 +7,10 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > This is the **W1–W4** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md)
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
-> effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and a recovery
-> scanner for stalled runs, plus `ctx.patched` versioning for safely evolving
-> deployed workflow code. Fast-follow items (child workflows, `continue-as-new`)
-> remain.
+> effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
+> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus `ctx.patched`
+> versioning for safely evolving deployed workflow code. Fast-follow items
+> (`continue-as-new`) remain.
 
 ## The idea
 
@@ -149,6 +149,29 @@ call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
 
+## Child workflows
+
+`ctx.child_workflow` runs another workflow as a sub-run and returns its result —
+durable composition. The child is a full workflow in its own right (it can run
+activities, sleep, and wait on signals); the parent suspends while it runs and
+resumes with the result once it completes:
+
+```python
+@workflow(name="process_order", registry=reg)
+def process_order(ctx, order_id):
+    shipment = ctx.child_workflow("ship_order", order_id=order_id)   # or pass the @workflow function
+    return {"order_id": order_id, "shipment": shipment}
+```
+
+The child run links back to the parent's step (`parent_run_id` / `parent_seq`);
+when it reaches a terminal state the engine resolves that step and re-ticks the
+parent, so the result is memoized and survives replay. A child that fails — or is
+cancelled — raises `ChildWorkflowFailed` in the parent, where it can be caught or
+left to fail the parent (just like a failed `ctx.activity`). Starting a child is
+idempotent on `(parent_run_id, parent_seq)`, so a crash between committing the step
+and starting the sub-run is recovered without spawning a duplicate. (Cancelling a
+parent does not yet cascade to its children — a fast-follow item.)
+
 ## Retries
 
 A failing activity is retried before it sinks the workflow. `@activity` carries the
@@ -205,6 +228,5 @@ redelivery.)
 
 ## What's next (from the plan)
 
-Remaining fast-follow items: child workflows (`ctx.child_workflow`),
-`continue-as-new` (history truncation for long loops), cron schedules, and an
-exactly-once activity dedup table.
+The fast-follow items still open: `continue-as-new` (history truncation for long
+loops), signal-with-start, cron schedules, and parent→child cancellation cascade.

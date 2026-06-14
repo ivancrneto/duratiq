@@ -1,6 +1,6 @@
 """Runnable example on the synchronous LocalDriver (no broker needed).
 
-    cd duratiq && python -m examples.checkout
+cd duratiq && python -m examples.checkout
 """
 
 from __future__ import annotations
