@@ -10,8 +10,11 @@ can run the same activity more than once. These helpers make that survivable:
 * :func:`run_once` records an effect in a dedup table the first time and returns the
   stored result on every later call with the same key — so the expensive/external
   part of an activity runs once even if the activity is retried.
+* :func:`heartbeat` reports liveness + progress from a long-running activity, pushing
+  its timeout deadline out; :func:`heartbeat_details` reads the last progress back so a
+  retry resumes instead of restarting.
 
-Both read a context that the driver installs around each activity execution; calling
+These read a context that the driver installs around each activity execution; calling
 them outside an activity raises ``RuntimeError``.
 """
 
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
@@ -40,16 +44,18 @@ class _ActivityScope:
     run_id: str
     seq: int
     store: Any  # SqlStore — kept untyped to avoid an import cycle
+    heartbeat_timeout_ms: int | None = None  # how far each heartbeat pushes the deadline
 
 
 @contextmanager
-def activity_scope(run_id: str, seq: int, store: Any) -> Iterator[None]:
+def activity_scope(run_id: str, seq: int, store: Any, *, heartbeat_timeout_ms: int | None = None) -> Iterator[None]:
     """Install the activity runtime context for the duration of one activity body.
 
     Drivers wrap each activity call in this so :func:`activity_info` / :func:`run_once`
-    work inside the body.
+    / :func:`heartbeat` work inside the body. ``heartbeat_timeout_ms`` is the activity's
+    heartbeat timeout, used to push the deadline out on each beat.
     """
-    token = _current.set(_ActivityScope(run_id=run_id, seq=seq, store=store))
+    token = _current.set(_ActivityScope(run_id=run_id, seq=seq, store=store, heartbeat_timeout_ms=heartbeat_timeout_ms))
     try:
         yield
     finally:
@@ -93,3 +99,29 @@ def run_once(key: str, fn: Callable[[], Any]) -> Any:
     value = fn()
     scope.store.put_dedup(key=key, run_id=scope.run_id, seq=scope.seq, result={"value": value})
     return value
+
+
+def heartbeat(details: Any = None) -> None:
+    """Report liveness (and optional progress ``details``) from a long-running activity.
+
+    For an activity declared with ``heartbeat_timeout_ms``, each heartbeat pushes the
+    timeout deadline out — so an activity that keeps beating is never timed out, while
+    one that goes silent past the interval is retried/failed by the activity-timeout
+    scanner. ``details`` (JSON-serialisable) is the latest progress, readable by a retry
+    via :func:`heartbeat_details` to resume instead of restarting. Raises if called
+    outside an activity body."""
+    scope = _require_scope("heartbeat()")
+    deadline: datetime | None = None
+    if scope.heartbeat_timeout_ms:
+        deadline = datetime.now(timezone.utc) + timedelta(milliseconds=scope.heartbeat_timeout_ms)
+    scope.store.record_heartbeat(scope.run_id, scope.seq, details=details, timeout_at=deadline)
+
+
+def heartbeat_details() -> Any:
+    """Return the progress recorded by the previous attempt's last :func:`heartbeat`.
+
+    ``None`` if this activity has never heartbeated. Use it at the top of an activity to
+    resume from where a retried attempt left off."""
+    scope = _require_scope("heartbeat_details()")
+    step = scope.store.get_step(scope.run_id, scope.seq)
+    return (step.heartbeat or {}).get("value") if step is not None and step.heartbeat else None

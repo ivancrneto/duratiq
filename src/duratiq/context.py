@@ -69,6 +69,7 @@ class ScheduledActivity:
     kwargs: dict
     max_retries: int
     start_to_close_ms: int | None = None
+    heartbeat_timeout_ms: int | None = None
 
 
 @dataclass
@@ -232,6 +233,7 @@ class WorkflowContext:
                 kwargs=dict(kwargs),
                 max_retries=activity.max_retries,
                 start_to_close_ms=activity.start_to_close_ms,
+                heartbeat_timeout_ms=activity.heartbeat_timeout_ms,
             )
         )
         raise Suspend()
@@ -566,6 +568,7 @@ class WorkflowContext:
                         kwargs=dict(call.kwargs),
                         max_retries=call.activity.max_retries,
                         start_to_close_ms=call.activity.start_to_close_ms,
+                        heartbeat_timeout_ms=call.activity.heartbeat_timeout_ms,
                     )
                 )
                 continue

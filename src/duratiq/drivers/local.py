@@ -40,7 +40,7 @@ class LocalDriver:
             # Retry inline up to max_retries (no backoff — this driver is for
             # dev/tests); only record FAILED once the budget is exhausted.
             attempt = 0
-            with activity_scope(run_id, seq, self.engine.store):
+            with activity_scope(run_id, seq, self.engine.store, heartbeat_timeout_ms=activity.heartbeat_timeout_ms):
                 while True:
                     try:
                         result = activity.fn(*args, **kwargs)
