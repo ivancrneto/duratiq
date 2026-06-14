@@ -8,8 +8,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > — the core MVP engine: activities with per-activity retries, replay, memoization,
 > crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
-> (`ctx.child_workflow`), and a recovery scanner for stalled runs. Fast-follow items
-> (`continue-as-new`, `ctx.patched` versioning) remain.
+> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
+> `continue-as-new` (`ctx.continue_as_new`) for long-running loops. Fast-follow items
+> (`ctx.patched` versioning) remain.
 
 ## The idea
 
@@ -166,6 +167,33 @@ call order. If a branch fails, `gather` fails fast with that error. (A plain
 `ctx.activity` can't be nested in `gather` — it would suspend on the first call;
 that's why `defer` exists.)
 
+## Continue-as-new
+
+Each tick replays from the top, so a workflow that loops forever — an event loop
+draining a queue, a long poll — accumulates step history without bound.
+`ctx.continue_as_new(**kwargs)` ends the current iteration and restarts the run
+*as if freshly started* with new input and an **empty history**, keeping the same
+run id:
+
+```python
+@workflow(name="poller", registry=reg)
+def poller(ctx, cursor, processed):
+    batch = ctx.activity(fetch_since, cursor)
+    for item in batch:
+        ctx.activity(handle, item)
+    ctx.sleep("PT1M")
+    # Restart with a fresh history instead of growing it forever.
+    ctx.continue_as_new(cursor=batch.next_cursor, processed=processed + len(batch))
+```
+
+Reaching the call means every prior `ctx` step in this iteration already completed,
+so there is nothing in flight to lose. The engine truncates the run's steps, fired
+timers, and consumed signals, then re-ticks it from seq 0 with the carried input.
+**Signals that haven't been consumed yet carry over** to the next iteration, so a
+queue-draining loop never drops a queued event across the restart. Like the other
+control-flow points, it survives a crash: the reset commits atomically with the
+tick, so recovery just resumes the new iteration.
+
 ## Child workflows
 
 `ctx.child_workflow` runs another workflow as a sub-run and returns its result —
@@ -221,6 +249,6 @@ redelivery.)
 
 ## What's next (from the plan)
 
-The fast-follow items still open: `continue-as-new` (history truncation for long
-loops), `ctx.patched` versioning for safely changing in-flight workflow code,
-signal-with-start, cron schedules, and parent→child cancellation cascade.
+The fast-follow items still open: `ctx.patched` versioning for safely changing
+in-flight workflow code, signal-with-start, cron schedules, and parent→child
+cancellation cascade.

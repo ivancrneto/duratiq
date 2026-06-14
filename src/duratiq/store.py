@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Engine as SaEngine
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .models import Base, WorkflowRun, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
@@ -104,6 +104,28 @@ class SqlStore:
         else:
             with self.Session.begin() as s:
                 _apply(s)
+
+    def continue_as_new(self, run_id: str, *, new_input: dict, session: Session) -> None:
+        """Truncate a run's history and restart it with fresh input (same run id).
+
+        Deletes every step, every timer, and every *consumed* signal, then resets the
+        run to PENDING with ``new_input`` and a cleared result/error — a clean slate
+        for the next iteration. Unconsumed signals are intentionally left in place so
+        they carry over and are matched by the new iteration's waits. Runs inside the
+        caller's locked-tick transaction, so the truncate + reset is atomic.
+        """
+        session.execute(delete(WorkflowStep).where(WorkflowStep.run_id == run_id))
+        session.execute(delete(WorkflowTimer).where(WorkflowTimer.run_id == run_id))
+        session.execute(
+            delete(WorkflowSignal).where(WorkflowSignal.run_id == run_id, WorkflowSignal.consumed_seq.is_not(None))
+        )
+        run = session.get(WorkflowRun, run_id)
+        if run is not None:
+            run.input = new_input
+            run.status = "PENDING"
+            run.result = None
+            run.error = None
+            run.updated_at = utcnow()
 
     # ----------------------------------------------------------------- steps
     def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:

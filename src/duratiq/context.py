@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
-from .exceptions import ActivityFailed, ChildWorkflowFailed, DeterminismError, Suspend
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend
 from .registry import Activity, Workflow
 
 # ISO-8601 duration subset: P[nD]T[nH][nM][nS], e.g. "PT10M", "P1DT6H".
@@ -230,6 +230,22 @@ class WorkflowContext:
         value = fn()
         self.scheduled_side_effects.append(ScheduledSideEffect(seq=seq, value=value))
         return value
+
+    def continue_as_new(self, **kwargs: Any) -> NoReturn:
+        """Restart this workflow with fresh input, discarding accumulated history.
+
+        For long-running or looping workflows (an event loop draining a queue, a
+        polling cron) whose step history would otherwise grow without bound. The
+        current iteration ends and the run restarts *as if newly started* with
+        ``kwargs`` as its input — same run id, empty history. Signals that have not
+        yet been consumed carry over to the new iteration; everything else (completed
+        steps, fired timers, consumed signals) is dropped.
+
+        This never returns — it raises to unwind the workflow, exactly like the other
+        control-flow points. Reaching the call means every prior ``ctx`` step in this
+        iteration already completed, so there is no pending work to lose.
+        """
+        raise ContinueAsNew(dict(kwargs))
 
     def child_workflow(self, workflow: "str | Workflow | Any", **kwargs: Any) -> Any:
         """Run another workflow as a child and return its result.

@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .context import WorkflowContext
-from .exceptions import ActivityFailed, ChildWorkflowFailed, Suspend
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, Suspend
 from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
@@ -100,6 +100,7 @@ class Engine:
         scheduled: list = []
         children: list = []
         matched = 0
+        restart = False
         parent_notify: tuple | None = None  # (parent_run_id, parent_seq, status, result, error)
         with self.store.locked_run(run_id) as session:
             run = self.store.get_run(run_id, session=session)
@@ -117,6 +118,11 @@ class Engine:
                 result = wf.fn(ctx, **(run.input or {}))
             except Suspend:
                 self.store.update_run(run_id, session=session, status="SUSPENDED")
+            except ContinueAsNew as can:
+                # Truncate history and reset the run to PENDING with the new input;
+                # the run restarts from seq 0 on the re-tick requested post-commit.
+                self.store.continue_as_new(run_id, new_input=can.input, session=session)
+                restart = True
             except (ActivityFailed, ChildWorkflowFailed) as exc:
                 terminal_status, terminal_error = "FAILED", {"type": type(exc).__name__, "message": str(exc)}
                 self.store.update_run(run_id, session=session, status="FAILED", error=terminal_error)
@@ -221,6 +227,9 @@ class Engine:
             self._start_child(run_id, sc.seq, sc.name, sc.input)
         # A queued signal was consumed during this tick — replay again to advance.
         if matched:
+            self.driver.request_tick(run_id)
+        # continue-as-new reset the run to PENDING — kick off the next iteration.
+        if restart:
             self.driver.request_tick(run_id)
         # This run finished and has a parent waiting on it — resolve the parent's step.
         if parent_notify is not None:
