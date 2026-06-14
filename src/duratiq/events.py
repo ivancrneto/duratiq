@@ -25,6 +25,7 @@ RUN_CANCELLED = "run.cancelled"
 ACTIVITY_SCHEDULED = "activity.scheduled"
 ACTIVITY_COMPLETED = "activity.completed"
 ACTIVITY_FAILED = "activity.failed"
+ACTIVITY_TIMED_OUT = "activity.timed_out"  # start-to-close elapsed; a retry was dispatched
 
 
 @dataclass(frozen=True)

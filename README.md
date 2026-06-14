@@ -312,6 +312,28 @@ exponential backoff, and recording FAILED only on the final attempt (no
 dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
 (and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
+## Activity timeouts
+
+Retries only fire when an activity *raises*. An activity that **hangs** — or whose
+message is lost without the broker redelivering — would otherwise leave the run
+suspended forever. A `start_to_close_ms` puts a deadline on each attempt:
+
+```python
+@activity(name="call_api", registry=reg, max_retries=3, start_to_close_ms=30_000)
+def call_api(order_id):
+    ...
+```
+
+When the activity is dispatched a deadline is stored on its step. The
+**activity-timeout scanner** — `engine.fire_due_activity_timeouts()`, run by the
+`Scanner` alongside the timer scan — finds activities that blew their deadline
+without reporting back and **re-dispatches a fresh attempt** (with a new deadline)
+while the retry budget lasts, then records the step FAILED so the workflow sees
+`ActivityFailed`. The deadline is claimed under the run lock and re-checked, so a
+result that lands in the same moment wins the race. Like any retry this can re-run a
+still-running activity, so the **idempotency** rule above still applies. Activities
+without a `start_to_close_ms` have no deadline (the previous behaviour, unchanged).
+
 ## Idempotent activities
 
 Activities are **at-least-once** — a retry, a broker redelivery, or a crash can run

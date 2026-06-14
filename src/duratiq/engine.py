@@ -9,7 +9,7 @@ driving the run forward until it returns.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -186,8 +186,11 @@ class Engine:
                 self.store.update_run(run_id, session=session, status="COMPLETED", result=terminal_result)
                 outcome = (events.RUN_COMPLETED, result, None)
 
-            # Record any newly-scheduled activities inside the same transaction.
+            # Record any newly-scheduled activities inside the same transaction. An
+            # activity with a start-to-close timeout carries a deadline, so the
+            # timeout scanner can retry/fail it if it never reports back.
             for sa in ctx.scheduled:
+                timeout_at = utcnow() + timedelta(milliseconds=sa.start_to_close_ms) if sa.start_to_close_ms else None
                 self.store.create_step(
                     run_id,
                     sa.seq,
@@ -195,6 +198,7 @@ class Engine:
                     name=sa.name,
                     input={"args": sa.args, "kwargs": sa.kwargs},
                     status="SCHEDULED",
+                    timeout_at=timeout_at,
                     session=session,
                 )
             scheduled = list(ctx.scheduled)
@@ -372,6 +376,73 @@ class Engine:
         for run_id in run_ids:
             self.driver.request_tick(run_id)
         return len(run_ids)
+
+    def fire_due_activity_timeouts(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Time out activities that were dispatched but never reported back in time.
+
+        This is the activity-timeout-scanner body: call it periodically alongside
+        ``fire_due_timers``. For each SCHEDULED activity past its start-to-close
+        deadline it re-dispatches a fresh attempt while the retry budget lasts, else
+        records the step FAILED so the workflow sees ``ActivityFailed`` on replay —
+        which is what keeps a hung or lost activity from wedging the run forever.
+        Passing ``now`` lets tests fast-forward. Returns the number of activities
+        timed out (retried or failed)."""
+        now = now or utcnow()
+        handled = 0
+        for run_id, seq in self.store.find_due_activity_timeouts(now=now, limit=limit):
+            if self._timeout_activity(run_id, seq, now):
+                handled += 1
+        return handled
+
+    def _timeout_activity(self, run_id: str, seq: int, now: datetime) -> bool:
+        """Claim and resolve one timed-out activity under the run lock.
+
+        Re-checks the deadline inside the lock, so a result that landed between the
+        scan and here wins. Retries (a fresh dispatch + new deadline) while attempts
+        remain, otherwise fails the step. The driver call and re-tick happen after the
+        transaction commits, mirroring ``tick``."""
+        redispatch: tuple | None = None
+        failed: tuple | None = None
+        with self.store.locked_run(run_id) as session:
+            step = self.store.get_step(run_id, seq, session=session)
+            if step is None or step.kind != "ACTIVITY" or step.status != "SCHEDULED":
+                return False
+            deadline = step.timeout_at
+            if deadline is None:
+                return False
+            if deadline.tzinfo is None:  # SQLite returns naive datetimes; treat as UTC
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            if deadline > now:
+                return False  # already resolved or its deadline was pushed out
+            activity = self.registry.get_activity(step.name)
+            ms = activity.start_to_close_ms
+            if step.attempt < activity.max_retries and ms:
+                step.attempt += 1
+                step.timeout_at = now + timedelta(milliseconds=ms)
+                args = (step.input or {}).get("args", [])
+                kwargs = (step.input or {}).get("kwargs", {})
+                redispatch = (step.attempt, step.name, args, kwargs, activity.max_retries)
+            else:
+                error = {
+                    "type": "ActivityTimeout",
+                    "message": f"activity {step.name!r} timed out after {ms} ms on attempt {step.attempt}",
+                }
+                self.store.complete_step(
+                    run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session
+                )
+                failed = (step.name, step.attempt, error)
+
+        if redispatch is not None:
+            attempt, name, args, kwargs, max_retries = redispatch
+            self._emit(events.ACTIVITY_TIMED_OUT, run_id, name=name, seq=seq, attempt=attempt)
+            self.driver.dispatch_activity(run_id, seq, name, args, kwargs, max_retries)
+            return True
+        if failed is not None:
+            name, attempt, error = failed
+            self._emit(events.ACTIVITY_FAILED, run_id, name=name, seq=seq, attempt=attempt, error=error)
+            self.driver.request_tick(run_id)
+            return True
+        return False
 
     # ------------------------------------------------------------- schedules
     def create_schedule(

@@ -54,6 +54,7 @@ class ScheduledActivity:
     args: list
     kwargs: dict
     max_retries: int
+    start_to_close_ms: int | None = None
 
 
 @dataclass
@@ -148,6 +149,7 @@ class WorkflowContext:
                 args=list(args),
                 kwargs=dict(kwargs),
                 max_retries=activity.max_retries,
+                start_to_close_ms=activity.start_to_close_ms,
             )
         )
         raise Suspend()
@@ -374,6 +376,7 @@ class WorkflowContext:
                         args=list(call.args),
                         kwargs=dict(call.kwargs),
                         max_retries=call.activity.max_retries,
+                        start_to_close_ms=call.activity.start_to_close_ms,
                     )
                 )
                 continue

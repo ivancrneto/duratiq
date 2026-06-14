@@ -26,6 +26,10 @@ class Activity:
     max_retries: int = 3
     min_backoff_ms: int | None = None
     max_backoff_ms: int | None = None
+    # Start-to-close timeout: the most time one dispatched attempt may stay
+    # outstanding before the engine times it out and retries (or fails it once the
+    # retry budget is spent). ``None`` = no timeout (a hung activity waits forever).
+    start_to_close_ms: int | None = None
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # Allow calling the activity directly (handy in unit tests / outside a workflow).
