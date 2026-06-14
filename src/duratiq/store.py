@@ -14,13 +14,13 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import Engine as SaEngine
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, delete, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, WorkflowRun, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
+from .models import Base, WorkflowRun, WorkflowSchedule, WorkflowSignal, WorkflowStep, WorkflowTimer, utcnow
 
 
 def _advisory_key(run_id: str) -> int:
@@ -77,6 +77,23 @@ class SqlStore:
                 select(WorkflowRun).where(
                     WorkflowRun.parent_run_id == parent_run_id,
                     WorkflowRun.parent_seq == parent_seq,
+                )
+            )
+
+    def find_active_children(self, parent_run_id: str) -> list[str]:
+        """Return the ids of this run's non-terminal child runs.
+
+        Used by cancellation to cascade: a parent coming down takes its still-running
+        children with it. Terminal children (already done/failed/cancelled) are left
+        as they are.
+        """
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id).where(
+                        WorkflowRun.parent_run_id == parent_run_id,
+                        WorkflowRun.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                    )
                 )
             )
 
@@ -142,6 +159,28 @@ class SqlStore:
         else:
             with self.Session.begin() as s:
                 _apply(s)
+
+    def continue_as_new(self, run_id: str, *, new_input: dict, session: Session) -> None:
+        """Truncate a run's history and restart it with fresh input (same run id).
+
+        Deletes every step, every timer, and every *consumed* signal, then resets the
+        run to PENDING with ``new_input`` and a cleared result/error — a clean slate
+        for the next iteration. Unconsumed signals are intentionally left in place so
+        they carry over and are matched by the new iteration's waits. Runs inside the
+        caller's locked-tick transaction, so the truncate + reset is atomic.
+        """
+        session.execute(delete(WorkflowStep).where(WorkflowStep.run_id == run_id))
+        session.execute(delete(WorkflowTimer).where(WorkflowTimer.run_id == run_id))
+        session.execute(
+            delete(WorkflowSignal).where(WorkflowSignal.run_id == run_id, WorkflowSignal.consumed_seq.is_not(None))
+        )
+        run = session.get(WorkflowRun, run_id)
+        if run is not None:
+            run.input = new_input
+            run.status = "PENDING"
+            run.result = None
+            run.error = None
+            run.updated_at = utcnow()
 
     # ----------------------------------------------------------------- steps
     def get_steps(self, run_id: str, *, session: Session | None = None) -> list[WorkflowStep]:
@@ -331,6 +370,71 @@ class SqlStore:
             wait.completed_at = utcnow()
             matched += 1
         return matched
+
+    # ------------------------------------------------------------- schedules
+    def create_schedule(self, *, id: str, name: str, cron: str, input: dict, next_fire_at: datetime) -> bool:
+        """Insert a recurring schedule. Idempotent on ``id``: returns ``False`` (and
+        leaves the existing row untouched) if one with this id already exists."""
+        with self.Session.begin() as s:
+            if s.get(WorkflowSchedule, id) is not None:
+                return False
+            s.add(WorkflowSchedule(id=id, name=name, cron=cron, input=input, active=True, next_fire_at=next_fire_at))
+        return True
+
+    def get_schedule(self, schedule_id: str) -> WorkflowSchedule | None:
+        with self.Session() as s:
+            return s.get(WorkflowSchedule, schedule_id)
+
+    def set_schedule_active(self, schedule_id: str, active: bool) -> bool:
+        with self.Session.begin() as s:
+            sch = s.get(WorkflowSchedule, schedule_id)
+            if sch is None:
+                return False
+            sch.active = active
+            sch.updated_at = utcnow()
+        return True
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        with self.Session.begin() as s:
+            sch = s.get(WorkflowSchedule, schedule_id)
+            if sch is None:
+                return False
+            s.delete(sch)
+        return True
+
+    def claim_due_schedules(
+        self, *, now: datetime, limit: int, compute_next: Callable[[str, datetime], datetime]
+    ) -> list[tuple[str, str, dict]]:
+        """Claim every active schedule whose ``next_fire_at`` has elapsed.
+
+        In one transaction, advances each due schedule's ``next_fire_at`` to its next
+        cron time (via ``compute_next(cron, now)``) and stamps ``last_fired_at`` —
+        *claiming* it so a concurrent scan won't fire it again. Returns ``(id, name,
+        input)`` for each, so the caller can start the runs after the claim commits.
+        On Postgres the rows are locked ``FOR UPDATE SKIP LOCKED`` to make concurrent
+        scanners safe; missed ticks are skipped rather than backfilled.
+        """
+        claimed: list[tuple[str, str, dict]] = []
+        with self.Session.begin() as s:
+            query = (
+                select(WorkflowSchedule)
+                .where(WorkflowSchedule.active.is_(True), WorkflowSchedule.next_fire_at <= now)
+                .order_by(WorkflowSchedule.next_fire_at)
+                .limit(limit)
+            )
+            if self.is_postgres:
+                query = query.with_for_update(skip_locked=True)
+            for sch in s.scalars(query).all():
+                claimed.append((sch.id, sch.name, dict(sch.input or {})))
+                sch.last_fired_at = now
+                sch.next_fire_at = compute_next(sch.cron, now)
+        return claimed
+
+    def set_schedule_last_run(self, schedule_id: str, run_id: str) -> None:
+        with self.Session.begin() as s:
+            sch = s.get(WorkflowSchedule, schedule_id)
+            if sch is not None:
+                sch.last_run_id = run_id
 
     # ------------------------------------------------------------------ lock
     @contextmanager
