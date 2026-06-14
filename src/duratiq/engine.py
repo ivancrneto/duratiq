@@ -17,12 +17,33 @@ from . import events
 from .context import WorkflowContext
 from .cron import parse_cron
 from .events import Listener, WorkflowEvent
-from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, QueryNotFound, Suspend, WorkflowNotFound
+from .exceptions import (
+    ActivityFailed,
+    ChildWorkflowFailed,
+    ContinueAsNew,
+    QueryNotFound,
+    Suspend,
+    UpdateFailed,
+    WorkflowNotFound,
+)
 from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
 
 _TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
+
+
+class _UpdatePending:
+    """Sentinel from ``engine.get_update_result`` while an update is still being applied
+    (the run hasn't ticked past its ``wait_update`` yet). Test with ``is UPDATE_PENDING``."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "duratiq.UPDATE_PENDING"
+
+
+UPDATE_PENDING = _UpdatePending()
 
 
 class Driver(Protocol):
@@ -157,20 +178,77 @@ class Engine:
         run = self.store.get_run(run_id)
         if run is None:
             raise WorkflowNotFound(f"run {run_id!r} not found")
-        wf = self.registry.get_workflow(run.name)
-        steps = self.store.get_steps(run_id)
-        ctx = WorkflowContext(run_id, steps)
-        # Replay to register handlers and rebuild state. Suspend (frontier reached) and
-        # a terminal activity/child failure both just stop the replay; handlers set
-        # before that point are available. continue_as_new is likewise a stopping point.
-        try:
-            wf.fn(ctx, **(run.input or {}))
-        except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew):
-            pass
+        ctx = self._replay_readonly(run_id, run)
         handler = ctx.query_handlers.get(name)
         if handler is None:
             raise QueryNotFound(name, list(ctx.query_handlers))
         return handler(*args, **kwargs)
+
+    def _replay_readonly(self, run_id: str, run: WorkflowRun) -> WorkflowContext:
+        """Replay the workflow side-effect-free and return its context.
+
+        Used by query/update to register handlers and rebuild state without advancing
+        the run: memoized steps return their results and the replay stops at the
+        frontier or where the run ended (Suspend / a terminal failure / continue-as-new
+        are all just stopping points — handlers set before that point are available).
+        Nothing is scheduled, committed, or dispatched.
+        """
+        wf = self.registry.get_workflow(run.name)
+        ctx = WorkflowContext(run_id, self.store.get_steps(run_id))
+        try:
+            wf.fn(ctx, **(run.input or {}))
+        except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew):
+            pass
+        return ctx
+
+    def update(self, run_id: str, name: str, *args: Any, **kwargs: Any) -> str:
+        """Deliver a synchronous, mutating update to a running workflow.
+
+        Unlike a signal (fire-and-forget) an update carries a **response**. If the
+        workflow registered a validator for ``name`` it runs first, read-only — if it
+        raises, the update is **rejected** and nothing is recorded (validate before
+        mutate). Otherwise the update is queued and the run re-ticked; the workflow
+        consumes it at a :meth:`WorkflowContext.wait_update` point, runs the registered
+        handler, and the result is recorded for :meth:`get_update_result`.
+
+        Returns the update id. Raises :class:`WorkflowNotFound` for an unknown run and
+        ``ValueError`` if the run is already terminal. Like the rest of duratiq the tick
+        is asynchronous: with a broker the result lands once a worker processes it; read
+        it back with :meth:`get_update_result`.
+        """
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise WorkflowNotFound(f"run {run_id!r} not found")
+        if run.status in _TERMINAL:
+            raise ValueError(f"run {run_id!r} is {run.status}; cannot accept updates")
+        validator = self._replay_readonly(run_id, run).update_validators.get(name)
+        if validator is not None:
+            validator(*args, **kwargs)  # raises to reject — propagated to the caller
+        update_id = uuid4().hex
+        # Queue the update and pair it with any already-waiting step in one transaction
+        # (mirrors engine.signal); the tick then replays past the now-completed wait and
+        # runs the handler. An update that arrives before the first wait stays PENDING
+        # and is matched by the tick that first reaches wait_update.
+        with self.store.locked_run(run_id) as session:
+            self.store.add_update(run_id, update_id, name, {"args": list(args), "kwargs": kwargs}, session=session)
+            self.store.match_updates(run_id, session=session)
+        self.driver.request_tick(run_id)
+        return update_id
+
+    def get_update_result(self, run_id: str, update_id: str) -> Any:
+        """Return a finished update's result, or :data:`UPDATE_PENDING` if not yet applied.
+
+        Raises :class:`UpdateFailed` if the handler raised, and :class:`WorkflowNotFound`
+        if the update id is unknown.
+        """
+        update = self.store.get_update(update_id)
+        if update is None or update.run_id != run_id:
+            raise WorkflowNotFound(f"update {update_id!r} not found for run {run_id!r}")
+        if update.status == "PENDING":
+            return UPDATE_PENDING
+        if update.status == "FAILED":
+            raise UpdateFailed(update.name, update.error)
+        return (update.result or {}).get("value")
 
     # ----------------------------------------------------------------- core
     def tick(self, run_id: str) -> None:
@@ -268,6 +346,27 @@ class Engine:
                 )
             if ctx.scheduled_waits:
                 matched = self.store.match_signals(run_id, session=session)
+
+            # Record newly-registered update waits, then pair any already-queued update
+            # so a pending update is consumed at once (mirrors the signal path).
+            for uw in ctx.scheduled_update_waits:
+                self.store.create_step(
+                    run_id,
+                    uw.seq,
+                    kind="UPDATE_WAIT",
+                    name="update",
+                    input=None,
+                    status="SCHEDULED",
+                    session=session,
+                )
+            if ctx.scheduled_update_waits and self.store.match_updates(run_id, session=session):
+                matched += 1
+            # Write back each handler outcome applied during this replay (idempotent —
+            # the handler re-runs every replay and produces the same result).
+            for applied in ctx.applied_updates:
+                self.store.record_update_result(
+                    applied.update_id, result=applied.result, error=applied.error, session=session
+                )
 
             # Cancel the losing side of any resolved wait_signal(timeout=...) race so
             # it can't fire/match later: the timer if the signal won, the wait if it

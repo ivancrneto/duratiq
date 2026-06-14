@@ -103,6 +103,18 @@ class ScheduledChild:
 
 
 @dataclass
+class ScheduledUpdateWait:
+    seq: int
+
+
+@dataclass
+class AppliedUpdate:
+    update_id: str
+    result: Any  # {"value": ...} on success, None on failure
+    error: dict | None  # the handler's exception, recorded on the update row
+
+
+@dataclass
 class DeferredCall:
     """An activity call built by :meth:`WorkflowContext.defer` but not yet started.
 
@@ -133,6 +145,13 @@ class WorkflowContext:
         # after a side-effect-free replay. Populated on every tick but only read by a
         # query, so registering one is free during normal execution.
         self.query_handlers: dict[str, Callable[..., Any]] = {}
+        # Update handlers (mutate state, return a result) and optional validators
+        # (run read-only before an update is accepted). Keyed by update name.
+        self.update_handlers: dict[str, Callable[..., Any]] = {}
+        self.update_validators: dict[str, Callable[..., Any]] = {}
+        self.scheduled_update_waits: list[ScheduledUpdateWait] = []
+        # Results to write back to update rows after the tick's replay (idempotent).
+        self.applied_updates: list[AppliedUpdate] = []
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -158,6 +177,28 @@ class WorkflowContext:
         call unconditionally at the top of a workflow and has no effect on replay.
         """
         self.query_handlers[name] = handler
+
+    def set_update_handler(self, name: str, handler: Callable[..., Any]) -> None:
+        """Register a handler for ``engine.update(run_id, name, ...)`` updates.
+
+        Unlike a query, an update **mutates** the workflow: the handler runs when the
+        workflow consumes the update at a :meth:`wait_update` point, typically mutating
+        the workflow's locals and returning a value that the caller reads back. The
+        handler must be deterministic — mutate state and return, no I/O or ``ctx`` calls
+        — because it is re-run on every replay to reconstruct state (like a query
+        handler, but writing). Registering it consumes no ``seq``.
+        """
+        self.update_handlers[name] = handler
+
+    def set_update_validator(self, name: str, validator: Callable[..., Any]) -> None:
+        """Register an optional validator run *before* an update is accepted.
+
+        ``engine.update`` replays the workflow read-only and calls the validator with
+        the update's arguments; if it raises, the update is **rejected** and never
+        recorded — nothing mutates. Use it to reject bad input (validate-before-mutate)
+        without consuming the update. Consumes no ``seq``.
+        """
+        self.update_validators[name] = validator
 
     def activity(self, activity: Activity, *args: Any, **kwargs: Any) -> Any:
         """Run an activity durably.
@@ -306,6 +347,61 @@ class WorkflowContext:
             self.scheduled_waits.append(ScheduledWait(seq=sig_seq, name=name))
             self.scheduled_timers.append(ScheduledTimer(seq=timer_seq, delay_seconds=duration_seconds(timeout)))
         raise Suspend()
+
+    def wait_update(self) -> str:
+        """Suspend until an ``engine.update`` arrives, apply its handler, and continue.
+
+        Mirrors :meth:`wait_signal`: the run parks until an update is delivered, then —
+        on the tick that consumes it — looks up the handler registered for the update's
+        name, calls it with the update's arguments, and records the handler's result
+        (or the error it raised) for the caller. Returns the update's name, so a loop
+        can branch on it:
+
+            while True:
+                ctx.wait_update()   # one update per call, applied in arrival order
+
+        The handler runs here, inside the replay, so its state mutation is reconstructed
+        on every replay; the result recording is idempotent. An update whose name has no
+        registered handler is recorded FAILED.
+        """
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is None:
+            self.scheduled_update_waits.append(ScheduledUpdateWait(seq=seq))
+            raise Suspend()
+        if step.kind != "UPDATE_WAIT":
+            raise DeterminismError(
+                f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, "
+                f"but the workflow called ctx.wait_update(). Did the workflow code change?"
+            )
+        if step.status != "COMPLETED":
+            raise Suspend()  # no update matched yet
+
+        info = (step.result or {}).get("value") or {}
+        name = info.get("name", "")
+        handler = self.update_handlers.get(name)
+        if handler is None:
+            self.applied_updates.append(
+                AppliedUpdate(
+                    update_id=info["id"],
+                    result=None,
+                    error={"type": "UpdateHandlerNotFound", "message": f"no update handler named {name!r}"},
+                )
+            )
+            return name
+        try:
+            value = handler(*info.get("args", []), **info.get("kwargs", {}))
+            self.applied_updates.append(AppliedUpdate(update_id=info["id"], result={"value": value}, error=None))
+        except Exception as exc:  # noqa: BLE001 - the handler's error is reported to the caller
+            self.applied_updates.append(
+                AppliedUpdate(
+                    update_id=info["id"],
+                    result=None,
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
+            )
+        return name
 
     def side_effect(self, fn: Callable[[], Any]) -> Any:
         """Record a non-deterministic value once and reuse it on every replay.

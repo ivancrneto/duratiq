@@ -17,6 +17,9 @@ The tables are the heart of the engine:
 * ``workflow_schedules`` — recurring starts. Each row holds a cron expression and a
   ``next_fire_at``; the schedule scanner starts a fresh run when it comes due and
   advances ``next_fire_at`` to the next cron time.
+* ``workflow_updates`` — the inbox for ``engine.update``. Each row is a synchronous,
+  mutating request; the workflow consumes it at a ``ctx.wait_update`` point, runs its
+  handler, and the handler's result/error is recorded here for the caller to read.
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ class WorkflowStep(Base):
 
     run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), primary_key=True)
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER | CHILD_WORKFLOW | PATCH
+    # ACTIVITY | TIMER | SIGNAL_WAIT | SIDE_EFFECT | GATHER | CHILD_WORKFLOW | PATCH | UPDATE_WAIT
     kind: Mapped[str] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(255))
     input: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
@@ -167,3 +170,28 @@ class WorkflowSchedule(Base):
     last_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WorkflowUpdate(Base):
+    """The inbox for ``engine.update`` — one row per synchronous, mutating request.
+
+    An update is delivered like a signal but carries a **response**: the workflow
+    consumes it at a ``ctx.wait_update`` point, runs the registered handler (which
+    mutates workflow state and returns a value), and the handler's result — or the
+    error it raised — is recorded here. ``consumed_seq`` is the UPDATE_WAIT step that
+    took it; ``status`` moves PENDING -> COMPLETED/FAILED. The caller reads the row
+    back with ``engine.get_update_result``.
+    """
+
+    __tablename__ = "workflow_updates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    args: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    # PENDING | COMPLETED | FAILED
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    result: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    error: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)

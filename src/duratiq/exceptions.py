@@ -66,5 +66,18 @@ class QueryNotFound(Exception):  # noqa: N818 - a lookup miss, not a runtime fai
         super().__init__(f"no query handler named {name!r}; registered: {sorted(available)}")
 
 
+class UpdateFailed(Exception):
+    """Raised by ``engine.get_update_result`` when the update's handler raised.
+
+    Carries the recorded ``error`` dict (the handler exception's type and message).
+    """
+
+    def __init__(self, name: str, error: dict | None) -> None:
+        self.name = name
+        self.error = error or {}
+        message = self.error.get("message", "update failed")
+        super().__init__(f"update {name!r} failed: {message}")
+
+
 class DeterminismError(Exception):
     """Raised when replay diverges from recorded history (e.g. step kind/name mismatch)."""

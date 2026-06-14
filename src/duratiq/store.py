@@ -29,6 +29,7 @@ from .models import (
     WorkflowSignal,
     WorkflowStep,
     WorkflowTimer,
+    WorkflowUpdate,
     utcnow,
 )
 
@@ -438,6 +439,64 @@ class SqlStore:
             wait.completed_at = utcnow()
             matched += 1
         return matched
+
+    # --------------------------------------------------------------- updates
+    def add_update(self, run_id: str, update_id: str, name: str, args: dict, *, session: Session | None = None) -> None:
+        def _apply(s: Session) -> None:
+            s.add(WorkflowUpdate(id=update_id, run_id=run_id, name=name, args=args, status="PENDING"))
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def get_update(self, update_id: str) -> WorkflowUpdate | None:
+        with self.Session() as s:
+            return s.get(WorkflowUpdate, update_id)
+
+    def match_updates(self, run_id: str, *, session: Session) -> int:
+        """Pair PENDING updates with SCHEDULED UPDATE_WAIT steps, oldest-first.
+
+        Mirrors :meth:`match_signals`: completes each wait with the update's
+        ``{id, name, args}`` and stamps ``consumed_seq``. The handler itself runs when
+        the workflow replays past the now-completed wait; here we only hand the update
+        to a waiting step. Returns how many were matched."""
+        waits = list(
+            session.scalars(
+                select(WorkflowStep)
+                .where(
+                    WorkflowStep.run_id == run_id,
+                    WorkflowStep.kind == "UPDATE_WAIT",
+                    WorkflowStep.status == "SCHEDULED",
+                )
+                .order_by(WorkflowStep.seq)
+            )
+        )
+        updates = list(
+            session.scalars(
+                select(WorkflowUpdate)
+                .where(WorkflowUpdate.run_id == run_id, WorkflowUpdate.consumed_seq.is_(None))
+                .order_by(WorkflowUpdate.received_at, WorkflowUpdate.id)
+            )
+        )
+        matched = 0
+        for wait, update in zip(waits, updates):
+            update.consumed_seq = wait.seq
+            wait.status = "COMPLETED"
+            wait.result = {"value": {"id": update.id, "name": update.name, **(update.args or {})}}
+            wait.completed_at = utcnow()
+            matched += 1
+        return matched
+
+    def record_update_result(self, update_id: str, *, result: Any, error: dict | None, session: Session) -> None:
+        """Write a handler's outcome onto the update row (idempotent across replays)."""
+        update = session.get(WorkflowUpdate, update_id)
+        if update is None:
+            return
+        update.status = "FAILED" if error is not None else "COMPLETED"
+        update.result = result
+        update.error = error
 
     # ----------------------------------------------------------------- dedup
     def get_dedup(self, key: str) -> WorkflowDedup | None:
