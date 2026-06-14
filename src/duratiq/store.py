@@ -10,6 +10,7 @@ it falls back to an in-process lock (single-process dev/test only).
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ from .models import (
     WorkflowDedup,
     WorkflowRun,
     WorkflowSchedule,
+    WorkflowSearchAttribute,
     WorkflowSignal,
     WorkflowStep,
     WorkflowTimer,
@@ -119,12 +121,25 @@ class SqlStore:
             return s.scalar(select(WorkflowRun).where(WorkflowRun.idempotency_key == key))
 
     @staticmethod
-    def _runs_filter(query, status: Any, name: str | None):
+    def _search_index(value: Any) -> str:
+        """Canonical string form of a search-attribute value, for indexed equality."""
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))[:255]
+
+    @classmethod
+    def _runs_filter(cls, query, status: Any, name: str | None, search_attributes: "dict | None" = None):
         if status is not None:
             statuses = [status] if isinstance(status, str) else list(status)
             query = query.where(WorkflowRun.status.in_(statuses))
         if name is not None:
             query = query.where(WorkflowRun.name == name)
+        # Each attribute filter is an EXISTS-style subquery; ANDed, so a run must carry
+        # every requested (key, value) pair.
+        for key, value in (search_attributes or {}).items():
+            matching = select(WorkflowSearchAttribute.run_id).where(
+                WorkflowSearchAttribute.key == key,
+                WorkflowSearchAttribute.value_index == cls._search_index(value),
+            )
+            query = query.where(WorkflowRun.id.in_(matching))
         return query
 
     def list_runs(
@@ -132,29 +147,65 @@ class SqlStore:
         *,
         status: "str | list[str] | None" = None,
         name: str | None = None,
+        search_attributes: "dict | None" = None,
         limit: int = 50,
         offset: int = 0,
         newest_first: bool = True,
     ) -> list[WorkflowRun]:
         """Return runs matching the filters, newest first by default.
 
-        ``status`` may be a single status or a list. Ordered by ``created_at`` (then
+        ``status`` may be a single status or a list. ``search_attributes`` is an AND of
+        equality matches (e.g. ``{"region": "eu"}``). Ordered by ``created_at`` (then
         ``id`` for a stable tiebreak), paginated by ``limit``/``offset``.
         """
         order_col = WorkflowRun.created_at.desc() if newest_first else WorkflowRun.created_at.asc()
         id_col = WorkflowRun.id.desc() if newest_first else WorkflowRun.id.asc()
         with self.Session() as s:
-            query = self._runs_filter(select(WorkflowRun), status, name)
+            query = self._runs_filter(select(WorkflowRun), status, name, search_attributes)
             query = query.order_by(order_col, id_col).limit(limit).offset(offset)
             return list(s.scalars(query))
 
-    def count_runs(self, *, status: "str | list[str] | None" = None, name: str | None = None) -> int:
+    def count_runs(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        search_attributes: "dict | None" = None,
+    ) -> int:
         """Count runs matching the same filters as :meth:`list_runs` (ignores paging)."""
         from sqlalchemy import func
 
         with self.Session() as s:
-            query = self._runs_filter(select(func.count()).select_from(WorkflowRun), status, name)
+            query = self._runs_filter(select(func.count()).select_from(WorkflowRun), status, name, search_attributes)
             return int(s.scalar(query) or 0)
+
+    def upsert_search_attributes(self, run_id: str, attributes: dict, *, session: Session | None = None) -> None:
+        """Set/replace a run's search attributes (one row per key)."""
+
+        def _apply(s: Session) -> None:
+            for key, value in attributes.items():
+                row = s.get(WorkflowSearchAttribute, (run_id, key))
+                if row is None:
+                    s.add(
+                        WorkflowSearchAttribute(
+                            run_id=run_id, key=key, value=value, value_index=self._search_index(value)
+                        )
+                    )
+                else:
+                    row.value = value
+                    row.value_index = self._search_index(value)
+
+        if session is not None:
+            _apply(session)
+        else:
+            with self.Session.begin() as s:
+                _apply(s)
+
+    def get_search_attributes(self, run_id: str) -> dict:
+        """Return a run's search attributes as a ``{key: value}`` dict."""
+        with self.Session() as s:
+            rows = s.scalars(select(WorkflowSearchAttribute).where(WorkflowSearchAttribute.run_id == run_id))
+            return {row.key: row.value for row in rows}
 
     def update_run(self, run_id: str, *, session: Session | None = None, **fields: Any) -> None:
         def _apply(s: Session) -> None:
