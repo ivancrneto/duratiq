@@ -12,10 +12,16 @@ dependencies = [
 dramatiq = ["dramatiq>=1.16"]
 redis = ["dramatiq>=1.16", "redis>=5"]
 postgres = ["psycopg[binary]>=3.1"]
+migrations = ["alembic>=1.13"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 # Everything the runnable examples/ need (postgres_dramatiq.py: Postgres + Redis broker).
 examples = ["dramatiq>=1.16", "redis>=5", "psycopg[binary]>=3.1"]
-dev = ["pytest>=8", "dramatiq>=1.16", "opentelemetry-sdk>=1.20"]
+dev = ["pytest>=8", "dramatiq>=1.16", "alembic>=1.13", "opentelemetry-sdk>=1.20"]
+
+[project.scripts]
+# Periodic timer / schedule / recovery scanner. Point it at a 'module:callable'
+# that returns a configured Engine, e.g. `duratiq-scanner myapp.workers:make_engine`.
+duratiq-scanner = "duratiq.scanner:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -23,6 +29,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/duratiq"]
+# Ship the Alembic script template (non-.py) alongside the migrations.
+artifacts = ["src/duratiq/migrations/script.py.mako"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
