@@ -73,6 +73,28 @@ pytest -q
 transaction-scoped advisory lock (`pg_advisory_xact_lock`) — the real guarantee.
 On **SQLite** it uses an in-process lock, which is single-process dev/test only.
 
+## Migrations
+
+`SqlStore.create_all()` builds the whole schema in one call — fine for tests and a
+fresh dev database. For a database you'll **evolve over time**, use the bundled
+Alembic migrations instead, so schema changes are versioned and reviewable:
+
+```bash
+pip install "duratiq[migrations]"
+export DURATIQ_DATABASE_URL=postgresql+psycopg://user:pass@host/db
+alembic -c alembic.ini upgrade head
+```
+
+The migrations live in `src/duratiq/migrations` and ship with the package; the URL
+comes from `DURATIQ_DATABASE_URL` (falling back to `sqlalchemy.url` in `alembic.ini`).
+A test (`tests/test_migrations.py`) asserts `upgrade head` produces exactly the schema
+`duratiq.models` describes via Alembic's `compare_metadata` — so a model change that
+ships without a matching migration fails CI. To add one after changing the models:
+
+```bash
+alembic -c alembic.ini revision --autogenerate -m "describe the change"
+```
+
 ## Durable timers
 
 `ctx.sleep(duration)` parks a run until a deadline, then resumes it — durably:
