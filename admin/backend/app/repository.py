@@ -23,11 +23,7 @@ def list_runs(
         filtered = filtered.where(WorkflowRun.name == name)
 
     total = session.scalar(select(func.count()).select_from(filtered.subquery())) or 0
-    rows = list(
-        session.scalars(
-            filtered.order_by(WorkflowRun.created_at.desc()).limit(limit).offset(offset)
-        )
-    )
+    rows = list(session.scalars(filtered.order_by(WorkflowRun.created_at.desc()).limit(limit).offset(offset)))
     return rows, total
 
 
@@ -36,15 +32,9 @@ def get_run(session: Session, run_id: str) -> WorkflowRun | None:
 
 
 def list_steps(session: Session, run_id: str) -> list[WorkflowStep]:
-    return list(
-        session.scalars(
-            select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)
-        )
-    )
+    return list(session.scalars(select(WorkflowStep).where(WorkflowStep.run_id == run_id).order_by(WorkflowStep.seq)))
 
 
 def status_counts(session: Session) -> dict[str, int]:
-    rows = session.execute(
-        select(WorkflowRun.status, func.count()).group_by(WorkflowRun.status)
-    ).all()
+    rows = session.execute(select(WorkflowRun.status, func.count()).group_by(WorkflowRun.status)).all()
     return {status: count for status, count in rows}

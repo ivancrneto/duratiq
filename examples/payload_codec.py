@@ -20,7 +20,7 @@ from duratiq import Engine, Registry, SqlStore, activity, set_payload_codec, wor
 from duratiq.drivers.local import LocalDriver
 
 BLOBS: dict[str, bytes] = {}  # stands in for S3/GCS/blob storage
-INLINE_LIMIT = 64             # bytes; anything bigger is offloaded
+INLINE_LIMIT = 64  # bytes; anything bigger is offloaded
 
 
 class OffloadingCodec:

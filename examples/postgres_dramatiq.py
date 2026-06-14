@@ -108,8 +108,11 @@ def main() -> None:
         print(f"  {marker} {oid}  {run.status:<10} {run.result['value'] if run.result else run.error}")
         ok += run.status == "COMPLETED"
 
-    print(f"\n{ok}/{len(run_ids)} workflows COMPLETED via Postgres + Redis. ✅" if ok == len(run_ids)
-          else f"\n{ok}/{len(run_ids)} completed — something went wrong. ✗")
+    print(
+        f"\n{ok}/{len(run_ids)} workflows COMPLETED via Postgres + Redis. ✅"
+        if ok == len(run_ids)
+        else f"\n{ok}/{len(run_ids)} completed — something went wrong. ✗"
+    )
     if ok != len(run_ids):
         raise SystemExit(1)
 

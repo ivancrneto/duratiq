@@ -44,10 +44,7 @@ def _workflow_name(workflow: "str | Workflow | Any") -> str:
     wf = getattr(workflow, "__duratiq_workflow__", None)
     if isinstance(wf, Workflow):
         return wf.name
-    raise TypeError(
-        f"child_workflow expected a workflow name, a @workflow function, or a Workflow, "
-        f"got {workflow!r}"
-    )
+    raise TypeError(f"child_workflow expected a workflow name, a @workflow function, or a Workflow, got {workflow!r}")
 
 
 @dataclass
