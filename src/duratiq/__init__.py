@@ -21,7 +21,15 @@ from .context import TIMEOUT, WorkflowContext
 from .decorators import activity, default_registry, workflow
 from .engine import Engine
 from .events import WorkflowEvent
-from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend, WorkflowNotFound
+from .exceptions import (
+    ActivityFailed,
+    ChildWorkflowFailed,
+    ContinueAsNew,
+    DeterminismError,
+    QueryNotFound,
+    Suspend,
+    WorkflowNotFound,
+)
 from .registry import Activity, Registry, Workflow
 from .scanner import Scanner
 from .store import SqlStore
@@ -37,6 +45,7 @@ __all__ = [
     "Engine",
     "IdentityCodec",
     "PayloadCodec",
+    "QueryNotFound",
     "Registry",
     "Scanner",
     "SqlStore",

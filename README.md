@@ -222,6 +222,31 @@ run_id = engine.signal_with_start(
 The signal is queued before the first tick, so the run's `ctx.wait_signal` finds it
 already waiting — no race against the start.
 
+## Queries
+
+Signals are write-only; a **query** reads a running workflow's computed state without
+advancing it. The workflow registers read-only handlers with `ctx.set_query_handler`,
+and `engine.query(run_id, name)` calls one:
+
+```python
+@workflow(name="cart", registry=reg)
+def cart(ctx):
+    items = []
+    ctx.set_query_handler("item_count", lambda: len(items))
+    while True:
+        items.append(ctx.wait_signal("add"))
+
+engine.query(run_id, "item_count")   # -> however many adds have been processed
+```
+
+`query` replays the workflow **side-effect-free** — completed steps return their
+memoized results and the replay stops at the frontier (or where the run ended), so
+nothing is scheduled, committed, or dispatched — then invokes the handler, which is
+usually a closure over the workflow's locals and so reflects every step processed so
+far. Registering a handler consumes no `seq` and never suspends, so it's free to call
+at the top of a workflow. Queries work on completed runs too (the handlers re-register
+on the replay-to-completion). An unknown handler raises `QueryNotFound`.
+
 ## Side effects
 
 Workflow code must be deterministic, so it can't call `now()`, `uuid4()`, or

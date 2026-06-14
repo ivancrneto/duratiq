@@ -17,7 +17,7 @@ from . import events
 from .context import WorkflowContext
 from .cron import parse_cron
 from .events import Listener, WorkflowEvent
-from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, Suspend
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, QueryNotFound, Suspend, WorkflowNotFound
 from .models import WorkflowRun, utcnow
 from .registry import Registry
 from .store import SqlStore
@@ -140,6 +140,37 @@ class Engine:
     def count_runs(self, *, status: "str | list[str] | None" = None, name: str | None = None) -> int:
         """Total runs matching the filters (the unpaginated count behind ``list_runs``)."""
         return self.store.count_runs(status=status, name=name)
+
+    def query(self, run_id: str, name: str, *args: Any, **kwargs: Any) -> Any:
+        """Read a running (or finished) workflow's computed state, without advancing it.
+
+        Replays the workflow **read-only** — completed steps return their memoized
+        results and the replay stops at the frontier (or where the run ended), so
+        nothing is scheduled, committed, or dispatched — then calls the handler the
+        workflow registered with :meth:`WorkflowContext.set_query_handler`. The handler
+        is typically a closure over the workflow's locals, so it sees every step
+        processed so far. ``*args``/``**kwargs`` are passed through to it.
+
+        Raises :class:`WorkflowNotFound` if the run is unknown and
+        :class:`QueryNotFound` if no handler by that name was registered.
+        """
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise WorkflowNotFound(f"run {run_id!r} not found")
+        wf = self.registry.get_workflow(run.name)
+        steps = self.store.get_steps(run_id)
+        ctx = WorkflowContext(run_id, steps)
+        # Replay to register handlers and rebuild state. Suspend (frontier reached) and
+        # a terminal activity/child failure both just stop the replay; handlers set
+        # before that point are available. continue_as_new is likewise a stopping point.
+        try:
+            wf.fn(ctx, **(run.input or {}))
+        except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew):
+            pass
+        handler = ctx.query_handlers.get(name)
+        if handler is None:
+            raise QueryNotFound(name, list(ctx.query_handlers))
+        return handler(*args, **kwargs)
 
     # ----------------------------------------------------------------- core
     def tick(self, run_id: str) -> None:
