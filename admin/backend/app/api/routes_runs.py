@@ -31,9 +31,7 @@ def list_runs(
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
 ) -> RunListOut:
-    rows, total = repository.list_runs(
-        session, status=status, name=name, limit=limit, offset=offset
-    )
+    rows, total = repository.list_runs(session, status=status, name=name, limit=limit, offset=offset)
     return RunListOut(
         items=[RunOut.model_validate(r) for r in rows],
         total=total,

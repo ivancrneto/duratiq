@@ -94,8 +94,13 @@ class Engine:
             # Record any newly-scheduled activities inside the same transaction.
             for sa in ctx.scheduled:
                 self.store.create_step(
-                    run_id, sa.seq, kind="ACTIVITY", name=sa.name,
-                    input={"args": sa.args, "kwargs": sa.kwargs}, status="SCHEDULED", session=session,
+                    run_id,
+                    sa.seq,
+                    kind="ACTIVITY",
+                    name=sa.name,
+                    input={"args": sa.args, "kwargs": sa.kwargs},
+                    status="SCHEDULED",
+                    session=session,
                 )
             scheduled = list(ctx.scheduled)
 
@@ -104,20 +109,32 @@ class Engine:
             # the deadline is fixed across replays and survives a crash.
             for st in ctx.scheduled_timers:
                 self.store.create_step(
-                    run_id, st.seq, kind="TIMER", name="sleep",
-                    input={"delay_seconds": st.delay_seconds}, status="SCHEDULED", session=session,
+                    run_id,
+                    st.seq,
+                    kind="TIMER",
+                    name="sleep",
+                    input={"delay_seconds": st.delay_seconds},
+                    status="SCHEDULED",
+                    session=session,
                 )
                 self.store.create_timer(
-                    run_id, st.seq,
-                    fire_at=utcnow() + timedelta(seconds=st.delay_seconds), session=session,
+                    run_id,
+                    st.seq,
+                    fire_at=utcnow() + timedelta(seconds=st.delay_seconds),
+                    session=session,
                 )
 
             # Record newly-registered signal waits, then pair any already-queued
             # signal so a signal that arrived before its wait is consumed at once.
             for sw in ctx.scheduled_waits:
                 self.store.create_step(
-                    run_id, sw.seq, kind="SIGNAL_WAIT", name=sw.name,
-                    input={"name": sw.name}, status="SCHEDULED", session=session,
+                    run_id,
+                    sw.seq,
+                    kind="SIGNAL_WAIT",
+                    name=sw.name,
+                    input={"name": sw.name},
+                    status="SCHEDULED",
+                    session=session,
                 )
             if ctx.scheduled_waits:
                 matched = self.store.match_signals(run_id, session=session)
@@ -127,8 +144,14 @@ class Engine:
             # commit atomically with everything else so replay reuses them verbatim.
             for se in ctx.scheduled_side_effects:
                 self.store.create_step(
-                    run_id, se.seq, kind="SIDE_EFFECT", name="side_effect",
-                    input=None, status="COMPLETED", result={"value": se.value}, session=session,
+                    run_id,
+                    se.seq,
+                    kind="SIDE_EFFECT",
+                    name="side_effect",
+                    input=None,
+                    status="COMPLETED",
+                    result={"value": se.value},
+                    session=session,
                 )
 
             # Record newly-scheduled child workflows. The sub-run itself is started
@@ -136,8 +159,13 @@ class Engine:
             # a step that got rolled back.
             for sc in ctx.scheduled_children:
                 self.store.create_step(
-                    run_id, sc.seq, kind="CHILD_WORKFLOW", name=sc.name,
-                    input={"input": sc.input}, status="SCHEDULED", session=session,
+                    run_id,
+                    sc.seq,
+                    kind="CHILD_WORKFLOW",
+                    name=sc.name,
+                    input={"input": sc.input},
+                    status="SCHEDULED",
+                    session=session,
                 )
             children = list(ctx.scheduled_children)
 
@@ -169,8 +197,11 @@ class Engine:
             self.store.complete_step(run_id, seq, status="COMPLETED", result={"value": result}, attempt=attempt)
         else:
             self.store.complete_step(
-                run_id, seq, status="FAILED",
-                error={"type": type(error).__name__, "message": str(error)}, attempt=attempt,
+                run_id,
+                seq,
+                status="FAILED",
+                error={"type": type(error).__name__, "message": str(error)},
+                attempt=attempt,
             )
         self.driver.request_tick(run_id)
 
@@ -188,14 +219,16 @@ class Engine:
         wf = self.registry.get_workflow(name)  # validate before creating the sub-run
         child_id = uuid4().hex
         self.store.create_run(
-            run_id=child_id, name=name, version=wf.version, input=input,
-            parent_run_id=parent_run_id, parent_seq=parent_seq,
+            run_id=child_id,
+            name=name,
+            version=wf.version,
+            input=input,
+            parent_run_id=parent_run_id,
+            parent_seq=parent_seq,
         )
         self.driver.request_tick(child_id)
 
-    def _notify_parent(
-        self, parent_run_id: str, parent_seq: int, status: str, result: Any, error: dict | None
-    ) -> None:
+    def _notify_parent(self, parent_run_id: str, parent_seq: int, status: str, result: Any, error: dict | None) -> None:
         """Resolve a parent's CHILD_WORKFLOW step from a finished child and re-tick it.
 
         Mirrors :meth:`report_activity_result`: an atomic step update followed by a
