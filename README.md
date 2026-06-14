@@ -112,6 +112,34 @@ skipped rather than backfilled. Pass `schedule_id=` to make registration idempot
 `pause_schedule` / `resume_schedule` / `delete_schedule` manage the lifecycle. Tests
 pass `now=...` to fast-forward without waiting on the clock.
 
+## The scanner
+
+Three things have to run on a cadence for a deployment to make progress on its own:
+`fire_due_timers` (deliver elapsed `ctx.sleep` timers), `fire_due_schedules` (start
+due cron runs), and `recover_stalled` (re-tick runs whose tick was lost to a crash).
+`Scanner` drives all three from one loop, on independent intervals — no APScheduler
+or periodiq dependency, just a blocking loop you run under whatever process manager
+you already have:
+
+```python
+from duratiq import Scanner
+
+Scanner(engine).run_forever()   # blocks until SIGINT/SIGTERM or .stop()
+```
+
+For a standalone process, point the bundled CLI at a `module:callable` that builds
+your engine (store + driver) — the same wiring your workers use:
+
+```bash
+duratiq-scanner myapp.workers:make_engine        # or: python -m duratiq.scanner ...
+duratiq-scanner myapp.workers:make_engine --timer-interval 1 --schedule-interval 60
+```
+
+Each scan has its own interval (timers want sub-second responsiveness; cron only
+changes per minute; recovery is a slower backstop), and a scan that raises is logged
+and retried next pass — one transient DB error never kills the loop. `run_once()` (or
+`--once`) runs each scan a single time, for driving the scanner from cron instead.
+
 ## Signals
 
 `ctx.wait_signal(name)` parks a run until an outside actor delivers a matching

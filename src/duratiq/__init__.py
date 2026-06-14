@@ -23,6 +23,7 @@ from .engine import Engine
 from .events import WorkflowEvent
 from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend, WorkflowNotFound
 from .registry import Activity, Registry, Workflow
+from .scanner import Scanner
 from .store import SqlStore
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "IdentityCodec",
     "PayloadCodec",
     "Registry",
+    "Scanner",
     "SqlStore",
     "Suspend",
     "Workflow",
