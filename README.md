@@ -328,6 +328,23 @@ idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
 re-suspends. (Lost *activity* messages are recovered by the broker's own
 redelivery.)
 
+## Listing runs
+
+Alongside `engine.get(run_id)`, `engine.list_runs` enumerates runs for an ops/admin
+view — filter by status and/or workflow name, newest first, paginated:
+
+```python
+engine.list_runs()                                  # newest 50 runs
+engine.list_runs(status="FAILED", limit=20)         # most recent failures
+engine.list_runs(status=["RUNNING", "SUSPENDED"])   # everything in flight
+engine.list_runs(name="checkout", offset=50, limit=50)  # page 2 of one workflow
+
+engine.count_runs(status="FAILED")                  # total behind the page
+```
+
+`status` takes a single status or a list; `limit` is clamped to `[1, 1000]`. Pair
+`list_runs` with `count_runs` (same filters, no paging) to drive pagination.
+
 ## Payload codec
 
 Every workflow input, result, step payload, and signal is memoized as JSON in
