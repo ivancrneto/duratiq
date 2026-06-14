@@ -10,8 +10,8 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
 > (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
 > `continue-as-new` (`ctx.continue_as_new`) for long-running loops, `ctx.patched`
-> versioning for safely evolving deployed workflow code, and recurring cron schedules
-> (`engine.create_schedule`).
+> versioning for safely evolving deployed workflow code, recurring cron schedules
+> (`engine.create_schedule`), and idempotent activities (`activity_info` / `run_once`).
 
 ## The idea
 
@@ -262,6 +262,37 @@ exponential backoff, and recording FAILED only on the final attempt (no
 dead-lettering). The `LocalDriver` retries inline without backoff. Because retries
 (and crash redelivery) can re-run an activity, **activities must be idempotent**.
 
+## Idempotent activities
+
+Activities are **at-least-once** — a retry, a broker redelivery, or a crash can run
+one more than once — so they must be idempotent. Two runtime helpers (importable
+inside any activity body) make that practical:
+
+```python
+from duratiq import activity, activity_info, run_once
+
+@activity(name="charge", registry=reg)
+def charge(order_id):
+    info = activity_info()                       # stable id for THIS invocation
+    return run_once(
+        info.idempotency_key,                    # f"{run_id}:{seq}" — same across retries
+        lambda: stripe.charge(order_id, idempotency_key=info.idempotency_key),
+    )
+```
+
+- **`activity_info()`** returns the current activity's `run_id`, `seq`, and a stable
+  `idempotency_key` (`run_id:seq`) that doesn't change across retries, redelivery, or
+  replay — pass it to an idempotent external API for true end-to-end exactly-once.
+- **`run_once(key, fn)`** records `fn`'s result in a dedup table the first time and
+  returns the stored value on every later call with the same key. So if an activity
+  charges a card and then a *later* step in the same activity fails, the retry skips
+  the charge and reuses the recorded result.
+
+`run_once` dedupes re-execution within Duratiq's control (retries, sequential
+redelivery). As with Temporal, a crash *between* the external effect landing and the
+dedup row committing can still re-run it — which is exactly why the
+`idempotency_key` exists: hand it to the downstream system for the hard guarantee.
+
 ## Versioning with patches
 
 Because replay matches recorded history by position, changing a deployed workflow's
@@ -318,6 +349,23 @@ Events: `run.started`, `run.suspended`, `run.completed` (carries `result`),
 `activity.scheduled` / `activity.completed` (carry `seq`, `attempt`). They're emitted
 **after** the state they describe is committed, and a listener that raises is
 swallowed — observability never breaks a run.
+
+## Listing runs
+
+Alongside `engine.get(run_id)`, `engine.list_runs` enumerates runs for an ops/admin
+view — filter by status and/or workflow name, newest first, paginated:
+
+```python
+engine.list_runs()                                  # newest 50 runs
+engine.list_runs(status="FAILED", limit=20)         # most recent failures
+engine.list_runs(status=["RUNNING", "SUSPENDED"])   # everything in flight
+engine.list_runs(name="checkout", offset=50, limit=50)  # page 2 of one workflow
+
+engine.count_runs(status="FAILED")                  # total behind the page
+```
+
+`status` takes a single status or a list; `limit` is clamped to `[1, 1000]`. Pair
+`list_runs` with `count_runs` (same filters, no paging) to drive pagination.
 
 ## Payload codec
 

@@ -117,6 +117,30 @@ class Engine:
     def get(self, run_id: str) -> WorkflowRun | None:
         return self.store.get_run(run_id)
 
+    def list_runs(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        newest_first: bool = True,
+    ) -> list[WorkflowRun]:
+        """List runs, newest first, optionally filtered by status and/or workflow name.
+
+        ``status`` accepts a single status (``"RUNNING"``) or a list
+        (``["FAILED", "CANCELLED"]``). ``limit`` is clamped to ``[1, 1000]``; page with
+        ``offset``. Pair with :meth:`count_runs` for a total. This is the read side an
+        admin/ops view is built on.
+        """
+        limit = max(1, min(limit, 1000))
+        offset = max(0, offset)
+        return self.store.list_runs(status=status, name=name, limit=limit, offset=offset, newest_first=newest_first)
+
+    def count_runs(self, *, status: "str | list[str] | None" = None, name: str | None = None) -> int:
+        """Total runs matching the filters (the unpaginated count behind ``list_runs``)."""
+        return self.store.count_runs(status=status, name=name)
+
     # ----------------------------------------------------------------- core
     def tick(self, run_id: str) -> None:
         scheduled: list = []

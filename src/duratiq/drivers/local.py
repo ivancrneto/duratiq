@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 
+from ..activity_runtime import activity_scope
 from ..engine import Engine
 
 
@@ -39,16 +40,17 @@ class LocalDriver:
             # Retry inline up to max_retries (no backoff — this driver is for
             # dev/tests); only record FAILED once the budget is exhausted.
             attempt = 0
-            while True:
-                try:
-                    result = activity.fn(*args, **kwargs)
-                    self.engine.report_activity_result(run_id, seq, result, None, attempt=attempt)
-                    break
-                except Exception as exc:  # noqa: BLE001 - activity may raise anything
-                    if attempt >= max_retries:
-                        self.engine.report_activity_result(run_id, seq, None, exc, attempt=attempt)
+            with activity_scope(run_id, seq, self.engine.store):
+                while True:
+                    try:
+                        result = activity.fn(*args, **kwargs)
+                        self.engine.report_activity_result(run_id, seq, result, None, attempt=attempt)
                         break
-                    attempt += 1
+                    except Exception as exc:  # noqa: BLE001 - activity may raise anything
+                        if attempt >= max_retries:
+                            self.engine.report_activity_result(run_id, seq, None, exc, attempt=attempt)
+                            break
+                        attempt += 1
         return item[0]
 
     def run_until_idle(self) -> None:
