@@ -129,12 +129,35 @@ class WorkflowContext:
         # tick's transaction: the timer if the signal won, the wait if it timed out.
         self.cancelled_timers: list[int] = []
         self.cancelled_waits: list[int] = []
+        # Read-only handlers registered via set_query_handler; invoked by engine.query
+        # after a side-effect-free replay. Populated on every tick but only read by a
+        # query, so registering one is free during normal execution.
+        self.query_handlers: dict[str, Callable[..., Any]] = {}
         self._seq = 0
 
     def _next_seq(self) -> int:
         seq = self._seq
         self._seq += 1
         return seq
+
+    def set_query_handler(self, name: str, handler: Callable[..., Any]) -> None:
+        """Register a read-only handler that reports the workflow's current state.
+
+        ``engine.query(run_id, name)`` replays the workflow (side-effect-free, advancing
+        nothing) up to its frontier, then calls the named handler — typically a closure
+        over the workflow's local state, so it sees everything processed so far:
+
+            @workflow(name="cart", registry=reg)
+            def cart(ctx):
+                items = []
+                ctx.set_query_handler("item_count", lambda: len(items))
+                while True:
+                    items.append(ctx.wait_signal("add"))
+
+        Registering a handler consumes no ``seq`` and never suspends, so it is safe to
+        call unconditionally at the top of a workflow and has no effect on replay.
+        """
+        self.query_handlers[name] = handler
 
     def activity(self, activity: Activity, *args: Any, **kwargs: Any) -> Any:
         """Run an activity durably.

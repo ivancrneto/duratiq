@@ -54,5 +54,17 @@ class WorkflowNotFound(Exception):
     """Raised when a run references a workflow name absent from the registry."""
 
 
+class QueryNotFound(Exception):  # noqa: N818 - a lookup miss, not a runtime failure
+    """Raised by ``engine.query`` when the workflow registered no handler by that name.
+
+    ``available`` lists the handlers the run *did* register, to make a typo obvious.
+    """
+
+    def __init__(self, name: str, available: list[str]) -> None:
+        self.name = name
+        self.available = available
+        super().__init__(f"no query handler named {name!r}; registered: {sorted(available)}")
+
+
 class DeterminismError(Exception):
     """Raised when replay diverges from recorded history (e.g. step kind/name mismatch)."""
