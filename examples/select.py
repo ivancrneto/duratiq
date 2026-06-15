@@ -37,6 +37,18 @@ def checkout(ctx, order_id: str) -> dict:
     return {"order_id": order_id, "outcome": outcome, "detail": val}
 
 
+@workflow(name="get_quote", registry=reg)
+def get_quote(ctx, sku: str) -> dict:
+    # A child workflow can be a branch too — race a sub-workflow against a deadline.
+    idx, val = ctx.select(ctx.defer_child("price_quote", sku=sku), ctx.defer_timer("PT5S"))
+    return {"won": "quote" if idx == 0 else "timeout", "detail": val}
+
+
+@workflow(name="price_quote", registry=reg)
+def price_quote(ctx, sku: str) -> dict:
+    return {"sku": sku, "price": 9.99}
+
+
 class HandDriver:
     """Ticks on demand; records (but does not auto-run) activity dispatches."""
 
@@ -89,6 +101,11 @@ def main() -> None:
     engine.fire_due_timers(now=utcnow() + timedelta(minutes=16))
     driver.run_ticks()
     print(f"  A3: timer wins    -> {engine.get(r3).result['value']['outcome']}")
+
+    # 4) A child-workflow branch: the quote sub-workflow finishes before the deadline.
+    r4 = engine.start("get_quote", sku="WIDGET")
+    driver.run_ticks()  # the child runs to completion and wins
+    print(f"  quote: child wins -> {engine.get(r4).result['value']}")
 
 
 if __name__ == "__main__":

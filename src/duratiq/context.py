@@ -142,6 +142,14 @@ class DeferredSignal:
     name: str
 
 
+@dataclass
+class DeferredChild:
+    """A child-workflow branch for :meth:`WorkflowContext.select`, built by ``ctx.defer_child``."""
+
+    workflow: "str | Workflow | Any"
+    kwargs: dict
+
+
 class WorkflowContext:
     def __init__(self, run_id: str, steps: list) -> None:
         self.run_id = run_id
@@ -157,6 +165,7 @@ class WorkflowContext:
         self.cancelled_timers: list[int] = []
         self.cancelled_waits: list[int] = []
         self.cancelled_activities: list[int] = []
+        self.cancelled_children: list[int] = []
         # Read-only handlers registered via set_query_handler; invoked by engine.query
         # after a side-effect-free replay. Populated on every tick but only read by a
         # query, so registering one is free during normal execution.
@@ -627,15 +636,19 @@ class WorkflowContext:
         """Build a signal branch for :meth:`select` (a wait, not yet started)."""
         return DeferredSignal(name=name)
 
-    def select(self, *branches: "DeferredCall | DeferredTimer | DeferredSignal") -> tuple[int, Any]:
+    def defer_child(self, workflow: "str | Workflow | Any", **kwargs: Any) -> DeferredChild:
+        """Build a child-workflow branch for :meth:`select` (a sub-run, not yet started)."""
+        return DeferredChild(workflow=workflow, kwargs=dict(kwargs))
+
+    def select(self, *branches: "DeferredCall | DeferredTimer | DeferredSignal | DeferredChild") -> tuple[int, Any]:
         """Wait for the **first** of several branches to resolve, and return it.
 
         Branches are built with :meth:`defer` (an activity), :meth:`defer_timer` (a
-        deadline), and :meth:`defer_signal` (a signal). All are armed together on first
-        encounter; the workflow suspends until one resolves, then ``select`` returns
-        ``(index, value)`` — the index of the winning branch and its value (the
-        activity result, the signal payload, or ``None`` for a timer). A winning
-        activity that *failed* re-raises its error.
+        deadline), :meth:`defer_signal` (a signal), and :meth:`defer_child` (a child
+        workflow). All are armed together on first encounter; the workflow suspends
+        until one resolves, then ``select`` returns ``(index, value)`` — the index of
+        the winning branch and its value (the activity/child result, the signal payload,
+        or ``None`` for a timer). A winning activity or child that *failed* re-raises.
 
             idx, value = ctx.select(
                 ctx.defer(charge, order_id),     # 0: activity result
@@ -644,10 +657,10 @@ class WorkflowContext:
             )
 
         Ties break by branch order, and the losing branches that are still pending are
-        **cancelled** — so the decision is fixed forever (a late activity result or
-        signal can't flip it on replay). A cancelled activity's message may still run on
-        a worker; its result is dropped, so activities in a select must be safe to
-        abandon."""
+        **cancelled** — so the decision is fixed forever (a late result or signal can't
+        flip it on replay). A cancelled activity's message may still run on a worker and
+        a cancelled child is cancelled (cascading to *its* children); its result is
+        dropped, so branches in a select must be safe to abandon."""
         if not branches:
             raise ValueError("select() needs at least one branch")
         seqs = [self._next_seq() for _ in branches]
@@ -674,7 +687,22 @@ class WorkflowContext:
     # --- select branch helpers ------------------------------------------------
     @staticmethod
     def _branch_kind(branch: Any) -> str:
-        return {DeferredCall: "ACTIVITY", DeferredTimer: "TIMER", DeferredSignal: "SIGNAL_WAIT"}[type(branch)]
+        return {
+            DeferredCall: "ACTIVITY",
+            DeferredTimer: "TIMER",
+            DeferredSignal: "SIGNAL_WAIT",
+            DeferredChild: "CHILD_WORKFLOW",
+        }[type(branch)]
+
+    @staticmethod
+    def _branch_name(branch: Any) -> "str | None":
+        if isinstance(branch, DeferredCall):
+            return branch.activity.name
+        if isinstance(branch, DeferredSignal):
+            return branch.name
+        if isinstance(branch, DeferredChild):
+            return _workflow_name(branch.workflow)
+        return None  # timers have no name
 
     def _check_branch_kind(self, branch: Any, step: Any, seq: int, index: int) -> None:
         expected = self._branch_kind(branch)
@@ -683,8 +711,8 @@ class WorkflowContext:
                 f"replay divergence at seq {seq}: history recorded a {step.kind!r} step, but "
                 f"select branch {index} is a {expected}. Did the workflow code change?"
             )
-        wanted = branch.activity.name if isinstance(branch, DeferredCall) else getattr(branch, "name", step.name)
-        if step.name != wanted:
+        wanted = self._branch_name(branch)
+        if wanted is not None and step.name != wanted:
             raise DeterminismError(
                 f"replay divergence at seq {seq}: history recorded {step.name!r}, but select "
                 f"branch {index} expected {wanted!r}. Did the workflow code change?"
@@ -706,20 +734,28 @@ class WorkflowContext:
             )
         elif isinstance(branch, DeferredTimer):
             self.scheduled_timers.append(ScheduledTimer(seq=seq, delay_seconds=duration_seconds(branch.duration)))
-        else:  # DeferredSignal
+        elif isinstance(branch, DeferredSignal):
             self.scheduled_waits.append(ScheduledWait(seq=seq, name=branch.name))
+        else:  # DeferredChild
+            self.scheduled_children.append(
+                ScheduledChild(seq=seq, name=_workflow_name(branch.workflow), input=dict(branch.kwargs))
+            )
 
     def _cancel_branch(self, branch: Any, seq: int) -> None:
         if isinstance(branch, DeferredCall):
             self.cancelled_activities.append(seq)
         elif isinstance(branch, DeferredTimer):
             self.cancelled_timers.append(seq)
-        else:  # DeferredSignal
+        elif isinstance(branch, DeferredSignal):
             self.cancelled_waits.append(seq)
+        else:  # DeferredChild
+            self.cancelled_children.append(seq)
 
     def _branch_value(self, branch: Any, step: Any) -> Any:
         if step.status == "FAILED":
-            raise ActivityFailed(branch.activity.name, step.error)  # only activities fail
+            if isinstance(branch, DeferredChild):
+                raise ChildWorkflowFailed(_workflow_name(branch.workflow), step.error)
+            raise ActivityFailed(branch.activity.name, step.error)  # otherwise an activity
         if isinstance(branch, DeferredTimer):
             return None
-        return (step.result or {}).get("value")  # activity result or signal payload
+        return (step.result or {}).get("value")  # activity / child result or signal payload

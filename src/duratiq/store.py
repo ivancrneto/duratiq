@@ -437,6 +437,22 @@ class SqlStore:
             step.status = "CANCELLED"
             step.completed_at = utcnow()
 
+    def cancel_child(self, run_id: str, seq: int, *, session: Session) -> str | None:
+        """Cancel a still-pending child-workflow branch that lost a ``ctx.select`` race.
+
+        Marks the CHILD_WORKFLOW step CANCELLED and returns the child run's id (if it
+        was started) so the engine can cancel the sub-run post-commit. A late
+        notification from that child can't resurrect the CANCELLED step."""
+        step = session.get(WorkflowStep, (run_id, seq))
+        if step is None or step.status != "SCHEDULED":
+            return None
+        step.status = "CANCELLED"
+        step.completed_at = utcnow()
+        child = session.scalar(
+            select(WorkflowRun).where(WorkflowRun.parent_run_id == run_id, WorkflowRun.parent_seq == seq)
+        )
+        return child.id if child is not None else None
+
     # -------------------------------------------------------------- recovery
     def find_stalled_runs(self, *, older_than: datetime, limit: int = 100) -> list[str]:
         """Return ids of non-terminal runs untouched since ``older_than``.

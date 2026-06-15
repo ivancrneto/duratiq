@@ -282,6 +282,7 @@ class Engine:
     def tick(self, run_id: str) -> None:
         scheduled: list = []
         children: list = []
+        cancel_child_runs: list[str] = []  # losing select child branches to cancel post-commit
         matched = 0
         run_name: str | None = None
         outcome: tuple | None = None  # (event_type, result, error) to emit post-commit
@@ -410,6 +411,10 @@ class Engine:
                 self.store.cancel_wait(run_id, seq, session=session)
             for seq in ctx.cancelled_activities:
                 self.store.cancel_activity(run_id, seq, session=session)
+            for seq in ctx.cancelled_children:
+                child_id = self.store.cancel_child(run_id, seq, session=session)
+                if child_id is not None:
+                    cancel_child_runs.append(child_id)
 
             # Record side-effect values computed during the replay. They are born
             # COMPLETED — the value was produced in this tick, not awaited — and
@@ -471,6 +476,11 @@ class Engine:
         # for an already-started child finds the existing run and just re-ticks it.
         for sc in children:
             self._start_child(run_id, sc.seq, sc.name, sc.input)
+        # Cancel the sub-runs of any child branches that lost a select race (their
+        # CHILD_WORKFLOW step is already CANCELLED, so the cancellation won't notify
+        # this parent back). Done post-commit — it takes the child's own lock.
+        for child_id in cancel_child_runs:
+            self._cancel(child_id, notify_parent=False)
         # A queued signal was consumed during this tick — replay again to advance.
         if matched:
             self.driver.request_tick(run_id)
