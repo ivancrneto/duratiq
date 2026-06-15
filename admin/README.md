@@ -54,16 +54,24 @@ database the duratiq engine already populates (see `docker-compose.yml`).
 
 | View        | Contents                                                            |
 |-------------|---------------------------------------------------------------------|
-| Runs list   | Status counts, filterable/paginated table of runs.                  |
-| Run detail  | Run metadata, input/result/error, the step history, and actions.    |
+| Runs list   | Status counts, filter by status / name / **search attributes**, paginated. |
+| Run detail  | Run metadata, **parent-run link**, **search attributes**, input/result/error, the step timeline (with timeouts + heartbeat progress), and actions. |
+
+Filter the runs list by search attribute with a JSON object — `{"region":"eu"}` —
+matching `engine.list_runs(search_attributes=…)` (ANDed equality).
 
 ### Actions
 
-- **Cancel** (non-terminal runs) — writes `status=CANCELLED`; the engine's
-  `tick()` already honours it. No broker needed.
+- **Cancel** (non-terminal runs) — writes `status=CANCELLED` and **cascades** to any
+  still-running child workflows (matching `Engine.cancel`'s downward cascade); the
+  engine's `tick()` honours it. No broker needed. (Failing a *directly* cancelled
+  child's parent needs the registry, so that upward notification is left to the
+  engine — the admin only cascades downward.)
 - **Retry** (FAILED runs) — resets the run to `PENDING`, drops the failed step,
-  and enqueues a `duratiq_tick` so a running worker resumes it. Requires
-  `DURATIQ_BROKER_URL` (see `backend/README.md`); without it, retry returns 503.
+  and enqueues a `duratiq_tick` so a running worker resumes it.
+- **Send signal** (non-terminal runs) — delivers a named signal (with optional JSON
+  payload), pairing it with any waiting `ctx.wait_signal`, then enqueues a tick so the
+  run advances. Like retry, requires `DURATIQ_BROKER_URL`; without it, returns 503.
 
-The underlying `Engine.cancel()` / `Engine.retry()` also live in duratiq core, so
-they're usable programmatically without the admin.
+The underlying `Engine.cancel()` / `Engine.retry()` / `Engine.signal()` also live in
+duratiq core, so they're usable programmatically without the admin.
