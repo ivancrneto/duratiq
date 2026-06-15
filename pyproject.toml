@@ -1,12 +1,45 @@
 [project]
 name = "duratiq"
-version = "0.0.1"
+version = "0.1.0"
 description = "Durable workflows for Dramatiq — Temporal-style durable execution on your existing Dramatiq + Postgres stack."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Ivan Neto", email = "ivan.cr.neto@gmail.com" }]
+keywords = [
+    "dramatiq",
+    "durable-execution",
+    "workflow",
+    "workflows",
+    "orchestration",
+    "temporal",
+    "saga",
+    "postgres",
+    "sqlalchemy",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
 dependencies = [
     "sqlalchemy>=2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ivancrneto/duratiq"
+Repository = "https://github.com/ivancrneto/duratiq"
+Issues = "https://github.com/ivancrneto/duratiq/issues"
+Changelog = "https://github.com/ivancrneto/duratiq/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dramatiq = ["dramatiq>=1.16"]
@@ -29,8 +62,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/duratiq"]
-# Ship the Alembic script template (non-.py) alongside the migrations.
-artifacts = ["src/duratiq/migrations/script.py.mako"]
+# Ship non-.py package data: the Alembic script template and the PEP 561 typing marker.
+artifacts = [
+    "src/duratiq/migrations/script.py.mako",
+    "src/duratiq/py.typed",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

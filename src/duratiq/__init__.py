@@ -5,12 +5,15 @@ workflows are deterministic orchestrator functions, activities are Dramatiq
 messages, and all state lives in Postgres so a run resumes exactly where it left
 off after a crash.
 
-This package covers W1–W4 of DURATIQ_MVP_PLAN.md — the core MVP engine: activities
-with per-activity retries, replay, memoization, crash recovery, durable timers
-(``ctx.sleep``), signals (``ctx.wait_signal``), side effects (``ctx.side_effect``),
-a parallel barrier (``ctx.gather``), child workflows (``ctx.child_workflow``), and a
-recovery scanner for stalled runs. Fast-follow items (continue-as-new, ctx.patched
-versioning) remain.
+The engine is feature-complete: activities with per-activity retries, replay and
+memoization, crash recovery; durable timers (``ctx.sleep``), signals
+(``ctx.wait_signal``), side effects (``ctx.side_effect``), a parallel barrier
+(``ctx.gather``), racing branches (``ctx.select``); child workflows
+(``ctx.child_workflow``), continue-as-new, ``ctx.patched`` versioning, recurring cron
+schedules, and idempotent activities (``activity_info`` / ``run_once``); activity
+timeouts and heartbeats; queries and updates; search attributes; a pluggable payload
+codec; OpenTelemetry tracing and a lifecycle listener; and a recovery scanner. See
+the project CHANGELOG for the full surface.
 """
 
 from __future__ import annotations
