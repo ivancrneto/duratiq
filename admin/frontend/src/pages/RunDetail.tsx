@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Link as RouterLink, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import { JsonBlock } from "../components/JsonBlock";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +43,29 @@ export function RunDetail() {
       refresh();
     },
     onError: (e: Error) => toast.error("Retry failed", { description: e.message }),
+  });
+
+  const [signalName, setSignalName] = useState("");
+  const [signalPayload, setSignalPayload] = useState("");
+  const signal = useMutation({
+    mutationFn: () => {
+      let payload: unknown = null;
+      if (signalPayload.trim()) {
+        try {
+          payload = JSON.parse(signalPayload);
+        } catch {
+          throw new Error("Payload must be valid JSON (or empty)");
+        }
+      }
+      return api.signalRun(runId, signalName.trim(), payload);
+    },
+    onSuccess: () => {
+      toast.success("Signal delivered", { description: "A tick was enqueued to advance the run." });
+      setSignalName("");
+      setSignalPayload("");
+      refresh();
+    },
+    onError: (e: Error) => toast.error("Signal failed", { description: e.message }),
   });
 
   if (run.isLoading) return <div className="text-muted-foreground">Loading…</div>;
@@ -98,6 +122,52 @@ export function RunDetail() {
         <Field label="Lease owner" value={r.lease_owner ?? "—"} />
       </div>
 
+      {r.parent_run_id && (
+        <Card className="p-3">
+          <div className="text-xs text-muted-foreground">Child of</div>
+          <RouterLink
+            to={`/runs/${r.parent_run_id}`}
+            className="font-mono text-sm text-primary hover:underline"
+          >
+            {r.parent_run_id}
+          </RouterLink>
+          <span className="ml-2 text-xs text-muted-foreground">(step #{r.parent_seq})</span>
+        </Card>
+      )}
+
+      {Object.keys(r.search_attributes).length > 0 && (
+        <Labeled label="Search attributes">
+          <JsonBlock value={r.search_attributes} />
+        </Labeled>
+      )}
+
+      {!isTerminal && (
+        <Card className="space-y-3 p-4">
+          <div className="text-sm font-semibold">Send signal</div>
+          <div className="flex flex-wrap items-start gap-3">
+            <Input
+              className="w-48"
+              placeholder="Signal name"
+              value={signalName}
+              onChange={(e) => setSignalName(e.target.value)}
+            />
+            <Input
+              className="w-72 font-mono"
+              placeholder='Payload JSON (optional), e.g. {"approved": true}'
+              value={signalPayload}
+              onChange={(e) => setSignalPayload(e.target.value)}
+            />
+            <Button
+              size="sm"
+              disabled={!signalName.trim() || signal.isPending}
+              onClick={() => signal.mutate()}
+            >
+              Send
+            </Button>
+          </div>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Labeled label="Input">
           <JsonBlock value={r.input} />
@@ -136,7 +206,17 @@ export function RunDetail() {
                           attempt {s.attempt}
                         </span>
                       )}
+                      {s.timeout_at && (
+                        <span className="text-sm text-muted-foreground">
+                          timeout {new Date(s.timeout_at).toLocaleTimeString()}
+                        </span>
+                      )}
                     </div>
+                    {s.heartbeat != null && (
+                      <Labeled label="Heartbeat" small>
+                        <JsonBlock value={s.heartbeat} />
+                      </Labeled>
+                    )}
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                       <Labeled label="Input" small>
                         <JsonBlock value={s.input} />

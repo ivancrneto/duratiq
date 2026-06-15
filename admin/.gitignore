@@ -1,6 +1,10 @@
 # Local/seeded SQLite databases (demo data, not source)
 *.db
 
+# Frontend dependencies and build output
+node_modules/
+dist/
+
 # TypeScript incremental build cache
 *.tsbuildinfo
 

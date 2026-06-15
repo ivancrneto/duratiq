@@ -6,6 +6,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -36,12 +37,30 @@ const ALL = "__all__"; // Radix Select items can't have an empty value.
 export function RunsList() {
   const [status, setStatus] = useState("");
   const [name, setName] = useState("");
+  const [saText, setSaText] = useState("");
   const [offset, setOffset] = useState(0);
+
+  // Parse the search-attribute box as a JSON object; invalid/partial JSON is ignored
+  // (treated as no filter) so typing doesn't spam the API with 400s.
+  let searchAttributes: Record<string, unknown> | undefined;
+  let saError = false;
+  if (saText.trim()) {
+    try {
+      const parsed = JSON.parse(saText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        searchAttributes = parsed as Record<string, unknown>;
+      } else {
+        saError = true;
+      }
+    } catch {
+      saError = true;
+    }
+  }
 
   const stats = useQuery({ queryKey: ["stats"], queryFn: api.stats });
   const runs = useQuery({
-    queryKey: ["runs", status, name, offset],
-    queryFn: () => api.listRuns({ status, name, limit: PAGE, offset }),
+    queryKey: ["runs", status, name, saText, offset],
+    queryFn: () => api.listRuns({ status, name, searchAttributes, limit: PAGE, offset }),
     placeholderData: keepPreviousData,
   });
 
@@ -82,6 +101,15 @@ export function RunsList() {
           value={name}
           onChange={(e) => {
             setName(e.target.value);
+            setOffset(0);
+          }}
+        />
+        <Input
+          className={cn("w-72 font-mono", saError && "border-destructive")}
+          placeholder='Search attrs JSON, e.g. {"region":"eu"}'
+          value={saText}
+          onChange={(e) => {
+            setSaText(e.target.value);
             setOffset(0);
           }}
         />
