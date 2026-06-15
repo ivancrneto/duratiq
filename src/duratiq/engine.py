@@ -679,21 +679,53 @@ class Engine:
         """Remove a schedule entirely. Returns ``False`` if absent."""
         return self.store.delete_schedule(schedule_id)
 
-    def recover_stalled(self, *, older_than_seconds: float = 60, now: datetime | None = None, limit: int = 100) -> int:
+    def recover_stalled(
+        self,
+        *,
+        older_than_seconds: float = 60,
+        now: datetime | None = None,
+        limit: int = 100,
+        redispatch_orphaned_activities: bool = False,
+    ) -> int:
         """Re-tick non-terminal runs that have been idle longer than the threshold.
 
         This is the recovery-scanner body: call it periodically (cron/``periodiq``).
         It backstops *lost ticks* — a timer fired or signal matched, but the worker
         died before its re-tick ran — by re-ticking stale runs; replay is idempotent
-        so a genuinely-waiting run just re-suspends. (Lost *activity* messages are
-        recovered by the broker's own redelivery, not here.) The threshold keeps the
-        scan from racing runs that are actively progressing. Returns runs re-ticked.
+        so a genuinely-waiting run just re-suspends. The threshold keeps the scan from
+        racing runs that are actively progressing. Returns runs re-ticked.
+
+        Lost *activity* messages are normally recovered by the broker's own redelivery,
+        or — for activities with a start-to-close/heartbeat timeout — by the
+        activity-timeout scanner. The one case neither covers is an **untimed** activity
+        whose dispatch was lost in the gap between committing the step and enqueuing the
+        message: the broker has nothing to redeliver and there's no deadline. Set
+        ``redispatch_orphaned_activities=True`` to also re-dispatch those
+        (``timeout_at IS NULL`` SCHEDULED activities) for each stale run, making recovery
+        self-sufficient. Because activities are at-least-once and must be idempotent, a
+        re-dispatch that races a still-in-flight original is safe; the trade-off is that
+        an untimed activity legitimately running longer than the threshold may be
+        dispatched again — give such activities a ``start_to_close_ms`` instead.
         """
         cutoff = (now or utcnow()) - timedelta(seconds=older_than_seconds)
         run_ids = self.store.find_stalled_runs(older_than=cutoff, limit=limit)
         for run_id in run_ids:
+            if redispatch_orphaned_activities:
+                self._redispatch_orphaned_activities(run_id)
             self.driver.request_tick(run_id)
         return len(run_ids)
+
+    def _redispatch_orphaned_activities(self, run_id: str) -> None:
+        """Re-dispatch a stalled run's untimed, still-SCHEDULED activities."""
+        for step in self.store.find_orphaned_activities(run_id):
+            try:
+                activity = self.registry.get_activity(step.name)
+            except KeyError:
+                continue  # unknown activity (renamed/removed) — nothing we can dispatch
+            inp = step.input or {}
+            self.driver.dispatch_activity(
+                run_id, step.seq, step.name, inp.get("args", []), inp.get("kwargs", {}), activity.max_retries
+            )
 
     def signal(self, run_id: str, name: str, payload: Any = None) -> bool:
         """Deliver a signal to a run, waking any matching ``ctx.wait_signal``.

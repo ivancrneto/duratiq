@@ -531,8 +531,17 @@ matched signal, a fired timer) and dies before its follow-up re-tick runs, leavi
 the run parked with nobody to advance it. `engine.recover_stalled()` is the
 backstop — call it periodically (cron/`periodiq`); it re-ticks non-terminal runs
 idle past a threshold. Replay is idempotent, so a genuinely-waiting run just
-re-suspends. (Lost *activity* messages are recovered by the broker's own
-redelivery.)
+re-suspends.
+
+Lost *activity* messages are normally recovered by the broker's own redelivery, or —
+for activities with a `start_to_close_ms`/`heartbeat_timeout_ms` — by the
+activity-timeout scanner. The one case neither covers is an **untimed** activity
+whose dispatch was lost in the gap between committing the step and enqueuing the
+message (the broker has nothing to redeliver, and there's no deadline). Pass
+`recover_stalled(redispatch_orphaned_activities=True)` to also re-dispatch those for
+stale runs — making recovery self-sufficient at the cost of possibly re-dispatching a
+slow-but-in-flight untimed activity (idempotency covers it; give long activities a
+`start_to_close_ms` instead).
 
 ## Observability
 
