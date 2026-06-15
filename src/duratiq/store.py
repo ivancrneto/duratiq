@@ -475,6 +475,28 @@ class SqlStore:
                 )
             )
 
+    def find_orphaned_activities(self, run_id: str) -> list[WorkflowStep]:
+        """SCHEDULED activity steps for a run that have **no** timeout deadline.
+
+        These are the activities the timeout scanner can never recover (it only acts
+        on steps with a ``timeout_at``). If such an activity's dispatch was lost in the
+        window between committing the step and enqueuing the message — so the broker
+        has nothing to redeliver — only an explicit recovery re-dispatch can move it.
+        """
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowStep)
+                    .where(
+                        WorkflowStep.run_id == run_id,
+                        WorkflowStep.kind == "ACTIVITY",
+                        WorkflowStep.status == "SCHEDULED",
+                        WorkflowStep.timeout_at.is_(None),
+                    )
+                    .order_by(WorkflowStep.seq)
+                )
+            )
+
     # --------------------------------------------------------------- signals
     def add_signal(
         self,
