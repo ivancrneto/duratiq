@@ -1,0 +1,45 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check distribution metadata (PyPI render)
+        run: python -m twine check dist/*
+
+      - name: Verify the wheel ships its data files
+        run: |
+          wheel=$(ls dist/*.whl)
+          contents=$(python -m zipfile -l "$wheel")
+          for f in duratiq/py.typed duratiq/migrations/script.py.mako; do
+            echo "$contents" | grep -q "$f" || { echo "missing from wheel: $f"; exit 1; }
+          done
+          echo "wheel contents OK"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*

@@ -1,0 +1,51 @@
+name: admin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: admin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install duratiq + the admin backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .                  # duratiq (satisfies the admin's dep)
+          python -m pip install -e "./admin/backend[dev]"
+
+      - name: Run admin backend tests
+        run: pytest -v
+        working-directory: admin/backend
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: admin/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: admin/frontend
+
+      - name: Typecheck and build
+        run: npm run build
+        working-directory: admin/frontend
