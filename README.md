@@ -4,14 +4,17 @@
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
 
-> This is the **W1–W4** slice from [`DURATIQ_MVP_PLAN.md`](../aizap/DURATIQ_MVP_PLAN.md)
-> — the core MVP engine: activities with per-activity retries, replay, memoization,
-> crash recovery, durable timers (`ctx.sleep`), signals (`ctx.wait_signal`), side
-> effects (`ctx.side_effect`), a parallel barrier (`ctx.gather`), child workflows
-> (`ctx.child_workflow`), and a recovery scanner for stalled runs, plus
-> `continue-as-new` (`ctx.continue_as_new`) for long-running loops, `ctx.patched`
-> versioning for safely evolving deployed workflow code, recurring cron schedules
-> (`engine.create_schedule`), and idempotent activities (`activity_info` / `run_once`).
+> **The engine is feature-complete.** It runs activities with per-activity retries,
+> replay and memoization, crash recovery, and a recovery scanner; durable timers
+> (`ctx.sleep`), signals (`ctx.wait_signal`, with timeouts), side effects
+> (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and racing branches
+> (`ctx.select`); child workflows (`ctx.child_workflow`, with cancellation cascade),
+> `continue-as-new`, `ctx.patched` versioning, recurring cron schedules, and
+> idempotent activities (`activity_info` / `run_once`); activity start-to-close
+> timeouts and heartbeats; queries and updates; typed search attributes; a pluggable
+> payload codec; OpenTelemetry tracing and a lifecycle-event listener; Alembic
+> migrations; a packaged scanner runner; and a read/act admin UI (see [`admin/`](admin/)).
+> See the [CHANGELOG](CHANGELOG.md) for the full 0.1.0 surface.
 
 ## The idea
 
