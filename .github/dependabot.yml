@@ -1,0 +1,33 @@
+version: 2
+
+updates:
+  # GitHub Actions — keep the SHA-pinned `uses:` current (Dependabot bumps the SHA
+  # and the trailing version comment together).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Python — the library's own dependencies (pyproject.toml).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Python — the admin backend (separate pyproject).
+  - package-ecosystem: pip
+    directory: /admin/backend
+    schedule:
+      interval: weekly
+
+  # JavaScript — the admin frontend (package-lock.json).
+  - package-ecosystem: npm
+    directory: /admin/frontend
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
