@@ -71,6 +71,19 @@ class WorkflowRun(Base):
     # runs (see Engine.recover_stalled), keying off updated_at.
     lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Workflow-level timeouts (Group 3 / migration 0006).
+    # execution_timeout_at: total lifetime ceiling across all continue_as_new chains.
+    # run_timeout_at: per-run ceiling; reset on continue_as_new.
+    execution_timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    run_timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Monotonically increasing retry/reset counter; incremented by engine.retry() and
+    # engine.reset_to_step(). Used by ctx.info() to expose the current attempt number.
+    attempt: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    # Immutable, unindexed context set at start() (Group 6 / migration 0009).
+    memo: Mapped[Any] = mapped_column(JSON, nullable=True)
+    # User-supplied business identifier (Group 7 / migration 0010). Distinct from the
+    # internal UUID id and idempotency_key; used with workflow_id_reuse_policy on start().
+    workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -95,6 +108,12 @@ class WorkflowStep(Base):
     # timeout). The activity-timeout scanner retries or fails a SCHEDULED activity once
     # this elapses, so a hung or lost activity can't wedge the run forever.
     timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Deadline before which the activity must be dequeued by a worker (Group 4 / 0007).
+    # NULL = no schedule-to-start deadline.
+    schedule_to_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Total budget from dispatch to completion across all retries (Group 4 / 0007).
+    # NULL = no schedule-to-close deadline.
+    schedule_to_close_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     # Latest progress reported by ``heartbeat(details)`` inside a long-running activity;
     # a retry of the same step reads it back via ``heartbeat_details()`` to resume.
     heartbeat: Mapped[Any] = mapped_column(CodecJSON, nullable=True)
@@ -171,6 +190,8 @@ class WorkflowSchedule(Base):
     cron: Mapped[str] = mapped_column(String(255))
     input: Mapped[Any] = mapped_column(JSON, default=dict)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # ALLOW | SKIP | REPLACE | TERMINATE (Group 5 / migration 0008).
+    overlap_policy: Mapped[str | None] = mapped_column(String(20), nullable=True, default="ALLOW")
     next_fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

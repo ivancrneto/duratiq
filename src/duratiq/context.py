@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, NoReturn
 
-from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend
+from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend, _ScopeCancelled
 from .registry import Activity, Workflow
 
 # ISO-8601 duration subset: P[nD]T[nH][nM][nS], e.g. "PT10M", "P1DT6H".
@@ -70,6 +71,8 @@ class ScheduledActivity:
     max_retries: int
     start_to_close_ms: int | None = None
     heartbeat_timeout_ms: int | None = None
+    schedule_to_start_timeout_ms: int | None = None
+    schedule_to_close_timeout_ms: int | None = None
 
 
 @dataclass
@@ -150,10 +153,80 @@ class DeferredChild:
     kwargs: dict
 
 
+@dataclass
+class ScheduledLocalActivity:
+    """A local activity pending inline execution in the current tick."""
+
+    seq: int
+    fn: Callable[..., Any]
+    args: list
+    kwargs: dict
+    max_retries: int
+
+
+@dataclass
+class ScheduledSignalHandler:
+    """A background signal handler step, registered via :meth:`WorkflowContext.set_signal_handler`."""
+
+    seq: int
+    name: str
+
+
+class CancellationScope:
+    """A context manager that can cancel a block of workflow code.
+
+    Obtain one from :meth:`WorkflowContext.cancellation_scope`. Inside the ``with``
+    block, call :meth:`cancel` to raise ``_ScopeCancelled`` at the next ``ctx.*``
+    suspension point. The exception is suppressed at ``__exit__`` so execution
+    continues after the ``with`` block. Useful for racing a long operation against
+    a timeout or a signal::
+
+        with ctx.cancellation_scope() as scope:
+            ctx.set_signal_handler("abort", lambda _: scope.cancel())
+            result = ctx.activity(some_activity)
+        # continues here whether the activity completed or was cancelled
+
+    Activities and timers started inside the scope that are still pending when the
+    scope is cancelled are automatically cancelled (their steps are discarded).
+    """
+
+    def __init__(self) -> None:
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Request cancellation of the enclosing scope."""
+        self._cancelled = True
+
+    @property
+    def cancelled(self) -> bool:
+        """True after :meth:`cancel` has been called."""
+        return self._cancelled
+
+    def __enter__(self) -> "CancellationScope":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        if exc_type is _ScopeCancelled:
+            return True  # suppress
+        return False
+
+
+@dataclass(frozen=True)
+class WorkflowInfo:
+    """Read-only snapshot of the current run's metadata, returned by :meth:`WorkflowContext.info`."""
+
+    run_id: str
+    name: str
+    version: int
+    parent_run_id: str | None
+    memo: dict | None = None
+
+
 class WorkflowContext:
-    def __init__(self, run_id: str, steps: list) -> None:
+    def __init__(self, run_id: str, steps: list, run: Any = None) -> None:
         self.run_id = run_id
         self._history = {step.seq: step for step in steps}
+        self._run = run  # WorkflowRun row, supplied by the engine for ctx.info()
         self.scheduled: list[ScheduledActivity] = []
         self.scheduled_timers: list[ScheduledTimer] = []
         self.scheduled_waits: list[ScheduledWait] = []
@@ -180,6 +253,15 @@ class WorkflowContext:
         # Search attributes set during this tick via upsert_search_attributes; the engine
         # writes them after the replay (re-writing the same values is idempotent).
         self.upserted_search_attributes: dict[str, Any] = {}
+        # Local activities: executed synchronously inline in the tick, no broker round-trip.
+        self.local_activities: list[ScheduledLocalActivity] = []
+        # Signal handlers registered via set_signal_handler; invoked during replay
+        # whenever a signal matching the name is consumed by match_signals.
+        self.signal_handlers: dict[str, Callable[..., Any]] = {}
+        # Pending SIGNAL_HANDLER steps to record this tick (background, non-blocking).
+        self.scheduled_signal_handlers: list[ScheduledSignalHandler] = []
+        # Active CancellationScope (if any); checked after each ctx.* call.
+        self._active_scope: CancellationScope | None = None
         self._seq = 0
 
     def _next_seq(self) -> int:
@@ -262,7 +344,10 @@ class WorkflowContext:
             # SCHEDULED but not yet finished — still waiting.
             raise Suspend()
 
-        # Not in history: schedule it (the engine writes the row + dispatches post-commit).
+        # Not in history: check if scope is already cancelled before scheduling.
+        self._check_scope_cancelled()
+
+        # Schedule it (the engine writes the row + dispatches post-commit).
         self.scheduled.append(
             ScheduledActivity(
                 seq=seq,
@@ -272,6 +357,49 @@ class WorkflowContext:
                 max_retries=activity.max_retries,
                 start_to_close_ms=activity.start_to_close_ms,
                 heartbeat_timeout_ms=activity.heartbeat_timeout_ms,
+                schedule_to_start_timeout_ms=activity.schedule_to_start_timeout_ms,
+                schedule_to_close_timeout_ms=activity.schedule_to_close_timeout_ms,
+            )
+        )
+        raise Suspend()
+
+    def local_activity(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        max_retries: int = 0,
+        **kwargs: Any,
+    ) -> Any:
+        """Run a local activity synchronously inside the current tick.
+
+        Unlike :meth:`activity`, local activities are executed inline in the engine
+        process without a Dramatiq dispatch. They are suitable for short-lived,
+        CPU-bound work where broker round-trip latency would be excessive.
+
+        On first encounter the function is added to the pending local-activity list
+        (the engine runs it after the workflow code returns) and the result is recorded
+        as a ``LOCAL_ACTIVITY`` step. On replay the memoized result is returned
+        immediately, just like a regular activity.
+        """
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is not None:
+            if step.status == "COMPLETED":
+                return (step.result or {}).get("value")
+            if step.status == "FAILED":
+                raise ActivityFailed(fn.__name__, step.error)
+            # SCHEDULED — engine is about to execute it this tick; replay waits.
+            raise Suspend()
+
+        # Not in history: record the pending execution (the engine runs it post-replay).
+        self.local_activities.append(
+            ScheduledLocalActivity(
+                seq=seq,
+                fn=fn,
+                args=list(args),
+                kwargs=dict(kwargs),
+                max_retries=max_retries,
             )
         )
         raise Suspend()
@@ -468,6 +596,43 @@ class WorkflowContext:
         value = fn()
         self.scheduled_side_effects.append(ScheduledSideEffect(seq=seq, value=value))
         return value
+
+    def now(self) -> datetime:
+        """Return the deterministic current time for this run.
+
+        Calls :func:`~duratiq.models.utcnow` exactly once on first encounter and
+        stores the result as a side effect; every later replay returns the same frozen
+        timestamp. Use this instead of ``datetime.utcnow()`` or ``datetime.now()``
+        directly — those would produce a different value on each tick and break
+        determinism.
+        """
+        from .models import utcnow as _utcnow
+
+        iso = self.side_effect(lambda: _utcnow().isoformat())
+        return datetime.fromisoformat(iso)
+
+    def info(self) -> WorkflowInfo:
+        """Return a read-only snapshot of the current run's metadata.
+
+        Safe to call at any point in workflow code — it reads data already loaded
+        by the engine for this tick, so there is no extra DB round-trip and no
+        effect on the deterministic seq sequence.
+        """
+        if self._run is None:
+            return WorkflowInfo(
+                run_id=self.run_id,
+                name="",
+                version=1,
+                parent_run_id=None,
+                memo=None,
+            )
+        return WorkflowInfo(
+            run_id=self.run_id,
+            name=self._run.name,
+            version=self._run.version,
+            parent_run_id=self._run.parent_run_id,
+            memo=dict(self._run.memo) if self._run.memo else None,
+        )
 
     def patched(self, patch_id: str) -> bool:
         """Gate a change to workflow code so in-flight runs stay deterministic.
@@ -759,3 +924,51 @@ class WorkflowContext:
         if isinstance(branch, DeferredTimer):
             return None
         return (step.result or {}).get("value")  # activity / child result or signal payload
+
+    def set_signal_handler(self, name: str, fn: Callable[..., Any]) -> None:
+        """Register a background handler that fires whenever a signal named ``name`` arrives.
+
+        Unlike :meth:`wait_signal` (which suspends until a specific signal arrives),
+        ``set_signal_handler`` is non-blocking: the workflow continues after registering
+        it. When the named signal is consumed (matched to this handler's step), the
+        callback is called with the signal's payload on the next replay.
+
+        Handlers are typically used to set flags or call ``scope.cancel()`` inside a
+        :meth:`cancellation_scope` block.
+        """
+        seq = self._next_seq()
+        step = self._history.get(seq)
+
+        if step is not None:
+            if step.status == "COMPLETED":
+                # Signal was matched — invoke the handler with its payload.
+                fn((step.result or {}).get("value"))
+                self._check_scope_cancelled()
+        else:
+            # Register this handler step for recording this tick.
+            self.scheduled_signal_handlers.append(ScheduledSignalHandler(seq=seq, name=name))
+
+        # Regardless of state, keep the handler registered so the engine can
+        # call match_signals against it.
+        self.signal_handlers[name] = fn
+
+    def cancellation_scope(self) -> "CancellationScope":
+        """Return a new :class:`CancellationScope` context manager.
+
+        Inside the ``with`` block, calling ``scope.cancel()`` (directly or from a signal
+        handler) will raise ``_ScopeCancelled`` at the next suspension point, which
+        :meth:`CancellationScope.__exit__` suppresses so execution continues after the
+        block. Typical usage::
+
+            with ctx.cancellation_scope() as scope:
+                ctx.set_signal_handler("abort", lambda _: scope.cancel())
+                result = ctx.activity(my_activity)
+        """
+        scope = CancellationScope()
+        self._active_scope = scope
+        return scope
+
+    def _check_scope_cancelled(self) -> None:
+        """Raise ``_ScopeCancelled`` if the active scope has been cancelled."""
+        if self._active_scope is not None and self._active_scope.cancelled:
+            raise _ScopeCancelled()

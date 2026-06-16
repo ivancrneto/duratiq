@@ -35,6 +35,12 @@ class Activity:
     # that keeps beating never times out; one that goes silent does. Takes precedence
     # over ``start_to_close_ms`` as the attempt deadline when set.
     heartbeat_timeout_ms: int | None = None
+    # Schedule-to-start timeout: max time the activity may sit in the queue before a
+    # worker picks it up. Fails with ScheduleToStartTimeout if exceeded. NULL = none.
+    schedule_to_start_timeout_ms: int | None = None
+    # Schedule-to-close timeout: total budget from dispatch to final completion, across
+    # all retries. Fails immediately (no more retries) if exceeded. NULL = none.
+    schedule_to_close_timeout_ms: int | None = None
 
     @property
     def attempt_timeout_ms(self) -> int | None:
@@ -55,6 +61,10 @@ class Workflow:
     fn: Callable[..., Any]
     name: str
     version: int = 1
+    # Optional default timeouts applied to every run started under this workflow.
+    # Can be overridden per-run via engine.start(execution_timeout=..., run_timeout=...).
+    execution_timeout: float | None = None  # seconds; total lifetime across continue_as_new
+    run_timeout: float | None = None  # seconds; per-run ceiling, reset on continue_as_new
 
 
 class Registry:
@@ -63,6 +73,8 @@ class Registry:
     def __init__(self) -> None:
         self._activities: dict[str, Activity] = {}
         self._workflows: dict[str, Workflow] = {}
+        self._dynamic_activity: Activity | None = None
+        self._dynamic_workflow: Workflow | None = None
 
     def add_activity(self, activity: Activity) -> None:
         self._activities[activity.name] = activity
@@ -70,14 +82,24 @@ class Registry:
     def add_workflow(self, workflow: Workflow) -> None:
         self._workflows[workflow.name] = workflow
 
+    def set_dynamic_activity(self, activity: Activity) -> None:
+        """Register a catch-all activity that handles any name not explicitly registered."""
+        self._dynamic_activity = activity
+
+    def set_dynamic_workflow(self, workflow: Workflow) -> None:
+        """Register a catch-all workflow that handles any name not explicitly registered."""
+        self._dynamic_workflow = workflow
+
     def get_activity(self, name: str) -> Activity:
-        try:
+        if name in self._activities:
             return self._activities[name]
-        except KeyError:
-            raise KeyError(f"activity {name!r} is not registered") from None
+        if self._dynamic_activity is not None:
+            return self._dynamic_activity
+        raise KeyError(f"activity {name!r} is not registered")
 
     def get_workflow(self, name: str) -> Workflow:
-        try:
+        if name in self._workflows:
             return self._workflows[name]
-        except KeyError:
-            raise WorkflowNotFound(f"workflow {name!r} is not registered") from None
+        if self._dynamic_workflow is not None:
+            return self._dynamic_workflow
+        raise WorkflowNotFound(f"workflow {name!r} is not registered")

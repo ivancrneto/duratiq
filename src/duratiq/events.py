@@ -21,6 +21,7 @@ RUN_SUSPENDED = "run.suspended"
 RUN_COMPLETED = "run.completed"
 RUN_FAILED = "run.failed"
 RUN_CANCELLED = "run.cancelled"
+RUN_TERMINATED = "run.terminated"
 # Activity lifecycle.
 ACTIVITY_SCHEDULED = "activity.scheduled"
 ACTIVITY_COMPLETED = "activity.completed"

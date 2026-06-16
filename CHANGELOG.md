@@ -6,6 +6,69 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ## [Unreleased]
 
+Temporal-parity additions across engine operations, run metadata, and execution
+primitives. All new columns are nullable and added by migrations `0006`–`0010`,
+so existing runs and stores upgrade cleanly.
+
+### Added
+
+**Engine operations**
+
+- `terminate(run_id, reason=None)` — hard termination (terminal status `FAILED`,
+  error type `WorkflowTerminated`), cascading to children. Distinct from `cancel`,
+  which records `CANCELLED`.
+- `batch_cancel(...)` / `batch_terminate(...)` — apply cancel/terminate across runs
+  matched by status, name, or search attributes.
+- `reset_to_step(run_id, seq)` — roll a `FAILED` run's history back to a checkpoint
+  (deletes all steps after `seq`) and replay, for deploying fixes to in-flight runs.
+- `update_with_start(...)` — atomically start a run and enqueue an update before the
+  first tick can race it.
+- `get_memo(run_id)` — read a run's immutable start-time metadata.
+
+**Workflow context (`ctx`)**
+
+- `ctx.now()` — deterministic current time, memoized via the side-effect machinery
+  so it returns the same value across replays.
+- `ctx.info()` — a frozen `WorkflowInfo` snapshot (run id, name, version, parent,
+  attempt, memo) with no DB round-trip during replay.
+- `ctx.local_activity(fn, *args, max_retries=0, **kwargs)` — run an activity inline
+  in the tick process (no broker round-trip), recorded as a `LOCAL_ACTIVITY` step
+  and memoized like a regular activity.
+- `ctx.set_signal_handler(name, fn)` — non-blocking background signal handler,
+  invoked when a matching signal is delivered.
+- `ctx.cancellation_scope()` — a `CancellationScope` context manager whose `cancel()`
+  (often called from a signal handler) raises at the next suspension point and is
+  suppressed at block exit, enabling scoped cancellation without ending the run.
+
+**Run metadata & policies**
+
+- Workflow-level timeouts: `@workflow(execution_timeout=..., run_timeout=...)` and
+  `start(execution_timeout=..., run_timeout=...)`. `execution_timeout` spans the whole
+  `continue_as_new` chain; `run_timeout` resets each run. Enforced by new scanners
+  `fire_due_execution_timeouts` / `fire_due_run_timeouts`.
+- Activity schedule timeouts: `@activity(schedule_to_start_timeout_ms=...,
+  schedule_to_close_timeout_ms=...)`. Schedule-to-start is enforced by
+  `fire_due_schedule_to_start_timeouts`; schedule-to-close caps the total budget and
+  fails without further retries.
+- Schedule overlap policy: `create_schedule(..., overlap_policy=...)` with `ALLOW`
+  (default), `SKIP`, `REPLACE`, and `TERMINATE`.
+- `memo` — immutable, unindexed metadata set via `start(memo=...)`, distinct from the
+  mutable, indexed search attributes.
+- `workflow_id` with a reuse policy: `start(workflow_id=..., workflow_id_reuse_policy=...)`
+  supporting `ALLOW_DUPLICATE`, `ALLOW_DUPLICATE_FAILED_ONLY`, `REJECT_DUPLICATE`, and
+  `TERMINATE_IF_RUNNING`; lookups via `store.find_runs_by_workflow_id`.
+
+**Dynamic handlers**
+
+- `@workflow.dynamic` / `@activity.dynamic` — register catch-all handlers that serve
+  any name not explicitly registered.
+
+**Public API**
+
+- New exports: `WorkflowInfo`, `CancellationScope`, `WorkflowTerminated`.
+- New scanner keys in `Scanner.run_once`: `schedule_to_start_timeouts`,
+  `execution_timeouts`, `run_timeouts`; new `--workflow-timeout-interval` CLI flag.
+
 ## [0.1.0] — 2026-06-15
 
 First public release: a feature-complete durable-execution engine for Dramatiq.

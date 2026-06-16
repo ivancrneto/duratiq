@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from .activity_runtime import ActivityInfo, activity_info, heartbeat, heartbeat_details, run_once
 from .codec import IdentityCodec, PayloadCodec, get_payload_codec, set_payload_codec
-from .context import TIMEOUT, WorkflowContext
+from .context import TIMEOUT, CancellationScope, WorkflowContext, WorkflowInfo
 from .decorators import activity, default_registry, workflow
 from .engine import UPDATE_PENDING, Engine
 from .events import WorkflowEvent
@@ -33,6 +33,7 @@ from .exceptions import (
     Suspend,
     UpdateFailed,
     WorkflowNotFound,
+    WorkflowTerminated,
 )
 from .registry import Activity, Registry, Workflow
 from .scanner import Scanner
@@ -42,6 +43,7 @@ __all__ = [
     "TIMEOUT",
     "UPDATE_PENDING",
     "Activity",
+    "CancellationScope",
     "ActivityFailed",
     "ActivityInfo",
     "ChildWorkflowFailed",
@@ -59,7 +61,9 @@ __all__ = [
     "Workflow",
     "WorkflowContext",
     "WorkflowEvent",
+    "WorkflowInfo",
     "WorkflowNotFound",
+    "WorkflowTerminated",
     "activity",
     "activity_info",
     "default_registry",

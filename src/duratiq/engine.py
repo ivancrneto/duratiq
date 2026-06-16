@@ -25,6 +25,8 @@ from .exceptions import (
     Suspend,
     UpdateFailed,
     WorkflowNotFound,
+    WorkflowTerminated,  # noqa: F401 - re-exported for callers
+    _ScopeCancelled,
 )
 from .models import WorkflowRun, utcnow
 from .registry import Registry
@@ -87,20 +89,61 @@ class Engine:
         *,
         idempotency_key: str | None = None,
         search_attributes: dict[str, Any] | None = None,
+        memo: dict[str, Any] | None = None,
+        execution_timeout: float | None = None,
+        run_timeout: float | None = None,
+        workflow_id: str | None = None,
+        workflow_id_reuse_policy: str = "ALLOW_DUPLICATE",
         **kwargs: Any,
     ) -> str:
+        """Start a new workflow run, returning its run id.
+
+        ``workflow_id`` is a user-chosen business identifier (distinct from the internal
+        UUID and ``idempotency_key``). ``workflow_id_reuse_policy`` controls what happens
+        when a run with the same ``workflow_id`` already exists:
+
+        * ``"ALLOW_DUPLICATE"`` (default) — always starts a new run.
+        * ``"ALLOW_DUPLICATE_FAILED_ONLY"`` — starts only if the most-recent run is ``FAILED``.
+        * ``"REJECT_DUPLICATE"`` — raises ``ValueError`` if any run with this id exists.
+        * ``"TERMINATE_IF_RUNNING"`` — terminates any non-terminal run with this id first.
+        """
         wf = self.registry.get_workflow(name)  # validate name early
         if idempotency_key:
             existing = self.store.find_by_idempotency_key(idempotency_key)
             if existing is not None:
                 return existing.id
+        # Apply workflow_id reuse policy before creating the run.
+        if workflow_id is not None:
+            policy = workflow_id_reuse_policy.upper()
+            existing_runs = self.store.find_runs_by_workflow_id(workflow_id)
+            if existing_runs:
+                if policy == "REJECT_DUPLICATE":
+                    raise ValueError(f"a run with workflow_id {workflow_id!r} already exists")
+                elif policy == "ALLOW_DUPLICATE_FAILED_ONLY":
+                    if existing_runs[0].status != "FAILED":
+                        raise ValueError(
+                            f"a non-failed run with workflow_id {workflow_id!r} already exists "
+                            f"(status={existing_runs[0].status!r})"
+                        )
+                elif policy == "TERMINATE_IF_RUNNING":
+                    for run in existing_runs:
+                        if run.status not in _TERMINAL:
+                            self._terminate(run.id, reason="terminated by workflow_id_reuse_policy", notify_parent=False)
         run_id = uuid4().hex
+        # Workflow-level timeouts: per-call override takes priority over decorator default.
+        exec_secs = execution_timeout if execution_timeout is not None else wf.execution_timeout
+        run_secs = run_timeout if run_timeout is not None else wf.run_timeout
+        now = utcnow()
         self.store.create_run(
             run_id=run_id,
             name=name,
             version=wf.version,
             input=kwargs,
             idempotency_key=idempotency_key,
+            execution_timeout_at=now + timedelta(seconds=exec_secs) if exec_secs else None,
+            run_timeout_at=now + timedelta(seconds=run_secs) if run_secs else None,
+            memo=memo,
+            workflow_id=workflow_id,
         )
         if search_attributes:
             self.store.upsert_search_attributes(run_id, search_attributes)
@@ -190,6 +233,13 @@ class Engine:
         """Return a run's search attributes as a ``{key: value}`` dict (empty if none)."""
         return self.store.get_search_attributes(run_id)
 
+    def get_memo(self, run_id: str) -> dict | None:
+        """Return a run's immutable memo, or ``None`` if absent or not found."""
+        run = self.store.get_run(run_id)
+        if run is None:
+            return None
+        return dict(run.memo) if run.memo else None
+
     def query(self, run_id: str, name: str, *args: Any, **kwargs: Any) -> Any:
         """Read a running (or finished) workflow's computed state, without advancing it.
 
@@ -222,10 +272,10 @@ class Engine:
         Nothing is scheduled, committed, or dispatched.
         """
         wf = self.registry.get_workflow(run.name)
-        ctx = WorkflowContext(run_id, self.store.get_steps(run_id))
+        ctx = WorkflowContext(run_id, self.store.get_steps(run_id), run=run)
         try:
             wf.fn(ctx, **(run.input or {}))
-        except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew):
+        except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew, _ScopeCancelled):
             pass
         return ctx
 
@@ -296,7 +346,7 @@ class Engine:
             run_name = run.name
             wf = self.registry.get_workflow(run.name)
             steps = self.store.get_steps(run_id, session=session)
-            ctx = WorkflowContext(run_id, steps)
+            ctx = WorkflowContext(run_id, steps, run=run)
 
             terminal_status: str | None = None
             terminal_result: Any = None
@@ -308,8 +358,12 @@ class Engine:
                 outcome = (events.RUN_SUSPENDED, None, None)
             except ContinueAsNew as can:
                 # Truncate history and reset the run to PENDING with the new input;
-                # the run restarts from seq 0 on the re-tick requested post-commit.
-                self.store.continue_as_new(run_id, new_input=can.input, session=session)
+                # execution_timeout_at persists across continuations; run_timeout_at is fresh.
+                run_secs = wf.run_timeout
+                run_timeout_at = utcnow() + timedelta(seconds=run_secs) if run_secs else None
+                self.store.continue_as_new(
+                    run_id, new_input=can.input, session=session, run_timeout_at=run_timeout_at
+                )
                 restart = True
             except (ActivityFailed, ChildWorkflowFailed) as exc:
                 terminal_status, terminal_error = "FAILED", {"type": type(exc).__name__, "message": str(exc)}
@@ -327,9 +381,20 @@ class Engine:
             # Record any newly-scheduled activities inside the same transaction. An
             # activity with a start-to-close or heartbeat timeout carries a deadline, so
             # the timeout scanner can retry/fail it if it never reports back or beats.
+            _now = utcnow()
             for sa in ctx.scheduled:
                 ms = sa.heartbeat_timeout_ms or sa.start_to_close_ms
-                timeout_at = utcnow() + timedelta(milliseconds=ms) if ms else None
+                timeout_at = _now + timedelta(milliseconds=ms) if ms else None
+                s2s_at = (
+                    _now + timedelta(milliseconds=sa.schedule_to_start_timeout_ms)
+                    if sa.schedule_to_start_timeout_ms
+                    else None
+                )
+                s2c_at = (
+                    _now + timedelta(milliseconds=sa.schedule_to_close_timeout_ms)
+                    if sa.schedule_to_close_timeout_ms
+                    else None
+                )
                 self.store.create_step(
                     run_id,
                     sa.seq,
@@ -338,6 +403,8 @@ class Engine:
                     input={"args": sa.args, "kwargs": sa.kwargs},
                     status="SCHEDULED",
                     timeout_at=timeout_at,
+                    schedule_to_start_at=s2s_at,
+                    schedule_to_close_at=s2c_at,
                     session=session,
                 )
             scheduled = list(ctx.scheduled)
@@ -376,6 +443,21 @@ class Engine:
                 )
             if ctx.scheduled_waits:
                 matched = self.store.match_signals(run_id, session=session)
+
+            # Record background signal handler steps (set_signal_handler). These consume
+            # signals without suspending the workflow, enabling CancellationScope patterns.
+            for sh in ctx.scheduled_signal_handlers:
+                self.store.create_step(
+                    run_id,
+                    sh.seq,
+                    kind="SIGNAL_HANDLER",
+                    name=sh.name,
+                    input={"name": sh.name},
+                    status="SCHEDULED",
+                    session=session,
+                )
+            if ctx.scheduled_signal_handlers:
+                matched += self.store.match_signals(run_id, session=session)
 
             # Record newly-registered update waits, then pair any already-queued update
             # so a pending update is consumed at once (mirrors the signal path).
@@ -461,6 +543,43 @@ class Engine:
                     session=session,
                 )
             children = list(ctx.scheduled_children)
+
+            # Execute any pending local activities synchronously in this transaction.
+            # Results are committed with the same transaction as all other step writes,
+            # so on the re-tick the step is already COMPLETED/FAILED in history.
+            if ctx.local_activities:
+                for sla in ctx.local_activities:
+                    self.store.create_step(
+                        run_id,
+                        sla.seq,
+                        kind="LOCAL_ACTIVITY",
+                        name=sla.fn.__name__,
+                        input={"args": sla.args, "kwargs": sla.kwargs},
+                        status="SCHEDULED",
+                        session=session,
+                    )
+                    attempt = 0
+                    last_error: dict | None = None
+                    while True:
+                        try:
+                            local_result = sla.fn(*sla.args, **sla.kwargs)
+                            self.store.complete_step(
+                                run_id, sla.seq, status="COMPLETED",
+                                result={"value": local_result}, attempt=attempt, session=session,
+                            )
+                            last_error = None
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            last_error = {"type": type(exc).__name__, "message": str(exc)}
+                            if attempt < sla.max_retries:
+                                attempt += 1
+                            else:
+                                self.store.complete_step(
+                                    run_id, sla.seq, status="FAILED",
+                                    error=last_error, attempt=attempt, session=session,
+                                )
+                                break
+                matched += 1  # request a re-tick so workflow replays past the now-resolved steps
 
             # If this run is itself a child and just reached a terminal state, queue a
             # notification so its parent's CHILD_WORKFLOW step resolves and the parent
@@ -582,8 +701,9 @@ class Engine:
 
         Re-checks the deadline inside the lock, so a result that landed between the
         scan and here wins. Retries (a fresh dispatch + new deadline) while attempts
-        remain, otherwise fails the step. The driver call and re-tick happen after the
-        transaction commits, mirroring ``tick``."""
+        remain, otherwise fails the step. If the total schedule-to-close budget is
+        already exhausted, fails immediately without retrying. The driver call and
+        re-tick happen after the transaction commits, mirroring ``tick``."""
         redispatch: tuple | None = None
         failed: tuple | None = None
         with self.store.locked_run(run_id) as session:
@@ -597,6 +717,27 @@ class Engine:
                 deadline = deadline.replace(tzinfo=timezone.utc)
             if deadline > now:
                 return False  # already resolved or its deadline was pushed out
+
+            # schedule-to-close: if total budget is exhausted, fail immediately (no retry).
+            s2c = step.schedule_to_close_at
+            if s2c is not None:
+                if s2c.tzinfo is None:
+                    s2c = s2c.replace(tzinfo=timezone.utc)
+                if s2c <= now:
+                    error = {
+                        "type": "ScheduleToCloseTimeout",
+                        "message": f"activity {step.name!r} exceeded its schedule-to-close timeout",
+                    }
+                    self.store.complete_step(
+                        run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session
+                    )
+                    failed = (step.name, step.attempt, error)
+                    if failed is not None:
+                        name, attempt, error = failed
+                        self._emit(events.ACTIVITY_FAILED, run_id, name=name, seq=seq, attempt=attempt, error=error)
+                        self.driver.request_tick(run_id)
+                        return True
+
             activity = self.registry.get_activity(step.name)
             ms = activity.attempt_timeout_ms
             if step.attempt < activity.max_retries and ms:
@@ -630,9 +771,97 @@ class Engine:
             return True
         return False
 
+    def fire_due_schedule_to_start_timeouts(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Fail SCHEDULED activities that were never picked up before their schedule-to-start deadline.
+
+        This is a scanner body: call it periodically. Returns the number of activities failed.
+        Once a schedule-to-start timeout fires, retries are no longer relevant — the
+        activity is failed immediately and no re-dispatch happens.
+        """
+        now = now or utcnow()
+        handled = 0
+        for run_id, seq in self.store.find_due_schedule_to_start_timeouts(now=now, limit=limit):
+            with self.store.locked_run(run_id) as session:
+                step = self.store.get_step(run_id, seq, session=session)
+                if step is None or step.kind != "ACTIVITY" or step.status != "SCHEDULED":
+                    continue
+                s2s = step.schedule_to_start_at
+                if s2s is None:
+                    continue
+                if s2s.tzinfo is None:
+                    s2s = s2s.replace(tzinfo=timezone.utc)
+                if s2s > now:
+                    continue
+                error = {
+                    "type": "ScheduleToStartTimeout",
+                    "message": f"activity {step.name!r} was not started before its schedule-to-start deadline",
+                }
+                self.store.complete_step(run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session)
+            self._emit(events.ACTIVITY_FAILED, run_id, name=step.name, seq=seq, attempt=step.attempt, error=error)
+            self.driver.request_tick(run_id)
+            handled += 1
+        return handled
+
+    def fire_due_execution_timeouts(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Fail runs that have exceeded their total execution timeout across all continue-as-new iterations.
+
+        Call periodically alongside ``fire_due_timers``. Returns the number of runs failed.
+        """
+        now = now or utcnow()
+        run_ids = self.store.find_due_execution_timeouts(now=now, limit=limit)
+        error = {"type": "ExecutionTimeout", "message": "workflow exceeded its execution timeout"}
+        count = 0
+        for run_id in run_ids:
+            with self.store.locked_run(run_id) as session:
+                run = self.store.get_run(run_id, session=session)
+                if run is None or run.status in _TERMINAL:
+                    continue
+                deadline = run.execution_timeout_at
+                if deadline is None:
+                    continue
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if deadline > now:
+                    continue
+                self.store.update_run(run_id, session=session, status="FAILED", error=error)
+                count += 1
+        return count
+
+    def fire_due_run_timeouts(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Fail runs that have exceeded their per-run timeout (reset on continue-as-new).
+
+        Call periodically alongside ``fire_due_timers``. Returns the number of runs failed.
+        """
+        now = now or utcnow()
+        run_ids = self.store.find_due_run_timeouts(now=now, limit=limit)
+        error = {"type": "RunTimeout", "message": "workflow exceeded its run timeout"}
+        count = 0
+        for run_id in run_ids:
+            with self.store.locked_run(run_id) as session:
+                run = self.store.get_run(run_id, session=session)
+                if run is None or run.status in _TERMINAL:
+                    continue
+                deadline = run.run_timeout_at
+                if deadline is None:
+                    continue
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if deadline > now:
+                    continue
+                self.store.update_run(run_id, session=session, status="FAILED", error=error)
+                count += 1
+        return count
+
     # ------------------------------------------------------------- schedules
     def create_schedule(
-        self, name: str, cron: str, *, schedule_id: str | None = None, now: datetime | None = None, **kwargs: Any
+        self,
+        name: str,
+        cron: str,
+        *,
+        schedule_id: str | None = None,
+        overlap_policy: str = "ALLOW",
+        now: datetime | None = None,
+        **kwargs: Any,
     ) -> str:
         """Register a recurring start of workflow ``name`` on a cron schedule.
 
@@ -641,12 +870,19 @@ class Engine:
         schedule id (provide ``schedule_id`` to make registration idempotent — a
         repeat call with the same id is a no-op). The schedule does nothing until
         ``fire_due_schedules`` is called periodically.
+
+        ``overlap_policy`` controls what happens when a new run would start while the
+        previous one is still active: ``"ALLOW"`` (default — always start), ``"SKIP"``
+        (skip this firing), ``"REPLACE"`` (cancel previous then start), or
+        ``"TERMINATE"`` (terminate previous then start).
         """
         self.registry.get_workflow(name)  # validate the workflow exists
         spec = parse_cron(cron)  # validate the expression
         sid = schedule_id or uuid4().hex
         next_fire_at = spec.next_after(now or utcnow())
-        self.store.create_schedule(id=sid, name=name, cron=cron, input=kwargs, next_fire_at=next_fire_at)
+        self.store.create_schedule(
+            id=sid, name=name, cron=cron, input=kwargs, next_fire_at=next_fire_at, overlap_policy=overlap_policy
+        )
         return sid
 
     def fire_due_schedules(self, *, now: datetime | None = None, limit: int = 100) -> int:
@@ -657,15 +893,30 @@ class Engine:
         due schedule is claimed (its ``next_fire_at`` advanced to the next cron time)
         before its run is started, so a missed tick is skipped rather than backfilled
         and concurrent scanners don't double-fire. Returns the number of runs started.
+
+        Overlap policies: ``ALLOW`` always starts; ``SKIP`` skips if last run is still
+        active; ``REPLACE`` cancels the last run first; ``TERMINATE`` terminates it first.
         """
         now = now or utcnow()
         claimed = self.store.claim_due_schedules(
             now=now, limit=limit, compute_next=lambda cron, n: parse_cron(cron).next_after(n)
         )
-        for schedule_id, name, input in claimed:
+        started = 0
+        for schedule_id, name, input, overlap_policy, last_run_id in claimed:
+            policy = (overlap_policy or "ALLOW").upper()
+            if policy != "ALLOW" and last_run_id is not None:
+                last_run = self.store.get_run(last_run_id)
+                if last_run is not None and last_run.status not in _TERMINAL:
+                    if policy == "SKIP":
+                        continue
+                    elif policy == "REPLACE":
+                        self._cancel(last_run_id, notify_parent=False)
+                    elif policy == "TERMINATE":
+                        self._terminate(last_run_id, reason="terminated by schedule overlap policy", notify_parent=False)
             run_id = self.start(name, **input)
             self.store.set_schedule_last_run(schedule_id, run_id)
-        return len(claimed)
+            started += 1
+        return started
 
     def pause_schedule(self, schedule_id: str) -> bool:
         """Stop a schedule from firing without deleting it. Returns ``False`` if absent."""
@@ -806,3 +1057,134 @@ class Engine:
         if self.driver is not None:
             self.driver.request_tick(run_id)
         return True
+
+    def terminate(self, run_id: str, reason: str | None = None) -> bool:
+        """Forcibly terminate a run, marking it ``FAILED`` with a ``WorkflowTerminated`` error.
+
+        Unlike :meth:`cancel` (which marks runs ``CANCELLED`` and cascades gracefully),
+        ``terminate`` marks the run and all its descendants ``FAILED`` with an explicit
+        termination error — useful to distinguish user-initiated hard stops from ordinary
+        cancellations in ops tooling. Returns ``False`` if the run is missing or already
+        terminal.
+        """
+        return self._terminate(run_id, reason=reason, notify_parent=True)
+
+    def _terminate(self, run_id: str, *, reason: str | None, notify_parent: bool) -> bool:
+        run_name: str | None = None
+        parent_notify: tuple | None = None
+        error = {"type": "WorkflowTerminated", "message": reason or "workflow terminated"}
+        with self.store.locked_run(run_id) as session:
+            run = self.store.get_run(run_id, session=session)
+            if run is None or run.status in _TERMINAL:
+                return False
+            run_name = run.name
+            self.store.update_run(run_id, session=session, status="FAILED", error=error)
+            if notify_parent and run.parent_run_id is not None:
+                parent_error = {
+                    "type": "ChildWorkflowFailed",
+                    "message": f"child workflow {run.name!r} was terminated: {error['message']}",
+                }
+                parent_notify = (run.parent_run_id, run.parent_seq, "FAILED", None, parent_error)
+        self._emit(events.RUN_TERMINATED, run_id, name=run_name, error=error)
+        for child_id in self.store.find_active_children(run_id):
+            self._terminate(child_id, reason=f"terminated with parent: {error['message']}", notify_parent=False)
+        if parent_notify is not None:
+            self._notify_parent(*parent_notify)
+        return True
+
+    def batch_cancel(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        limit: int = 10_000,
+    ) -> int:
+        """Cancel all runs matching the same filters as :meth:`list_runs`.
+
+        Each run is cancelled individually (children cascade). Returns the count of
+        runs actually cancelled (already-terminal runs are skipped). Use ``limit`` to
+        bound the batch size; call again with the same filters to continue paging.
+        """
+        runs = self.store.list_runs(
+            status=status, name=name, search_attributes=search_attributes, limit=limit, offset=0
+        )
+        return sum(1 for run in runs if self._cancel(run.id, notify_parent=True))
+
+    def batch_terminate(
+        self,
+        *,
+        status: "str | list[str] | None" = None,
+        name: str | None = None,
+        search_attributes: dict[str, Any] | None = None,
+        reason: str | None = None,
+        limit: int = 10_000,
+    ) -> int:
+        """Terminate all runs matching the same filters as :meth:`list_runs`.
+
+        Like :meth:`batch_cancel` but uses :meth:`terminate` semantics (``FAILED``
+        status, ``WorkflowTerminated`` error). Returns count of runs terminated.
+        """
+        runs = self.store.list_runs(
+            status=status, name=name, search_attributes=search_attributes, limit=limit, offset=0
+        )
+        return sum(1 for run in runs if self._terminate(run.id, reason=reason, notify_parent=True))
+
+    def reset_to_step(self, run_id: str, seq: int) -> bool:
+        """Roll a ``FAILED`` run's history back to ``seq`` and replay from there.
+
+        Deletes all steps with seq > ``seq`` (and their timer rows) then resets the
+        run to ``PENDING`` so the next tick replays from the frontier. Unlike
+        :meth:`retry` (which only removes FAILED steps and always replays from seq 0),
+        this lets you roll back to a specific checkpoint — useful after deploying a
+        bug fix to a run that failed mid-way through a long history. Returns ``False``
+        if the run is missing, not ``FAILED``, or ``seq`` is not in history.
+        """
+        with self.store.locked_run(run_id) as session:
+            run = self.store.get_run(run_id, session=session)
+            if run is None or run.status != "FAILED":
+                return False
+            steps = self.store.get_steps(run_id, session=session)
+            seqs = {step.seq for step in steps}
+            if seq not in seqs:
+                return False
+            self.store.delete_steps_after(run_id, seq, session=session)
+            self.store.update_run(run_id, session=session, status="PENDING", error=None)
+        if self.driver is not None:
+            self.driver.request_tick(run_id)
+        return True
+
+    def update_with_start(
+        self, name: str, update_name: str, *args: Any, **kwargs: Any
+    ) -> tuple[str, str]:
+        """Atomically start a workflow and deliver an update before the first tick.
+
+        The run is created and the update is queued inside the same locked transaction,
+        so there is no window in which the run exists but the update hasn't been
+        delivered. Returns ``(run_id, update_id)``. The workflow must register a handler
+        for ``update_name`` via :meth:`WorkflowContext.set_update_handler`; the update
+        is consumed at the first :meth:`WorkflowContext.wait_update` call.
+        """
+        wf = self.registry.get_workflow(name)
+        run_id = uuid4().hex
+        update_id = uuid4().hex
+        with self.store.locked_run(run_id) as session:
+            session.add(
+                WorkflowRun(
+                    id=run_id,
+                    name=name,
+                    version=wf.version,
+                    input={},
+                    status="PENDING",
+                )
+            )
+            self.store.add_update(
+                run_id,
+                update_id,
+                update_name,
+                {"args": list(args), "kwargs": kwargs},
+                session=session,
+            )
+        self._emit(events.RUN_STARTED, run_id, name=name)
+        self.driver.request_tick(run_id)
+        return run_id, update_id

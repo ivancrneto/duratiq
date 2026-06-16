@@ -63,6 +63,10 @@ class SqlStore:
         idempotency_key: str | None = None,
         parent_run_id: str | None = None,
         parent_seq: int | None = None,
+        execution_timeout_at: "datetime | None" = None,
+        run_timeout_at: "datetime | None" = None,
+        memo: dict | None = None,
+        workflow_id: str | None = None,
     ) -> str:
         with self.Session.begin() as session:
             session.add(
@@ -75,6 +79,10 @@ class SqlStore:
                     idempotency_key=idempotency_key,
                     parent_run_id=parent_run_id,
                     parent_seq=parent_seq,
+                    execution_timeout_at=execution_timeout_at,
+                    run_timeout_at=run_timeout_at,
+                    memo=memo,
+                    workflow_id=workflow_id,
                 )
             )
         return run_id
@@ -119,6 +127,17 @@ class SqlStore:
     def find_by_idempotency_key(self, key: str) -> WorkflowRun | None:
         with self.Session() as s:
             return s.scalar(select(WorkflowRun).where(WorkflowRun.idempotency_key == key))
+
+    def find_runs_by_workflow_id(self, workflow_id: str) -> list[WorkflowRun]:
+        """Return all runs for a given workflow_id, newest first."""
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun)
+                    .where(WorkflowRun.workflow_id == workflow_id)
+                    .order_by(WorkflowRun.created_at.desc())
+                )
+            )
 
     @staticmethod
     def _search_index(value: Any) -> str:
@@ -222,7 +241,14 @@ class SqlStore:
             with self.Session.begin() as s:
                 _apply(s)
 
-    def continue_as_new(self, run_id: str, *, new_input: dict, session: Session) -> None:
+    def continue_as_new(
+        self,
+        run_id: str,
+        *,
+        new_input: dict,
+        session: Session,
+        run_timeout_at: "datetime | None" = None,
+    ) -> None:
         """Truncate a run's history and restart it with fresh input (same run id).
 
         Deletes every step, every timer, and every *consumed* signal, then resets the
@@ -230,6 +256,10 @@ class SqlStore:
         for the next iteration. Unconsumed signals are intentionally left in place so
         they carry over and are matched by the new iteration's waits. Runs inside the
         caller's locked-tick transaction, so the truncate + reset is atomic.
+
+        ``run_timeout_at`` resets the per-run deadline for the new iteration;
+        ``execution_timeout_at`` is intentionally left unchanged (it spans the entire
+        continue-as-new chain).
         """
         session.execute(delete(WorkflowStep).where(WorkflowStep.run_id == run_id))
         session.execute(delete(WorkflowTimer).where(WorkflowTimer.run_id == run_id))
@@ -242,6 +272,7 @@ class SqlStore:
             run.status = "PENDING"
             run.result = None
             run.error = None
+            run.run_timeout_at = run_timeout_at
             run.updated_at = utcnow()
 
     # ----------------------------------------------------------------- steps
@@ -271,6 +302,8 @@ class SqlStore:
         status: str = "SCHEDULED",
         result: Any = None,
         timeout_at: datetime | None = None,
+        schedule_to_start_at: datetime | None = None,
+        schedule_to_close_at: datetime | None = None,
         session: Session | None = None,
     ) -> None:
         def _apply(s: Session) -> None:
@@ -286,6 +319,8 @@ class SqlStore:
                     status=status,
                     result=result,
                     timeout_at=timeout_at,
+                    schedule_to_start_at=schedule_to_start_at,
+                    schedule_to_close_at=schedule_to_close_at,
                     completed_at=utcnow() if status == "COMPLETED" else None,
                 )
             )
@@ -453,6 +488,24 @@ class SqlStore:
         )
         return child.id if child is not None else None
 
+    def delete_steps_after(self, run_id: str, seq: int, *, session: Session) -> None:
+        """Delete all steps with seq > ``seq`` and their associated timer rows.
+
+        Used by ``engine.reset_to_step`` to roll a run's history back to a checkpoint
+        without losing the steps that led up to it.
+        """
+        steps_to_delete = list(
+            session.scalars(
+                select(WorkflowStep).where(WorkflowStep.run_id == run_id, WorkflowStep.seq > seq)
+            )
+        )
+        for step in steps_to_delete:
+            if step.kind == "TIMER":
+                timer = session.get(WorkflowTimer, (run_id, step.seq))
+                if timer is not None:
+                    session.delete(timer)
+            session.delete(step)
+
     # -------------------------------------------------------------- recovery
     def find_stalled_runs(self, *, older_than: datetime, limit: int = 100) -> list[str]:
         """Return ids of non-terminal runs untouched since ``older_than``.
@@ -497,6 +550,54 @@ class SqlStore:
                 )
             )
 
+    def find_due_schedule_to_start_timeouts(self, *, now: datetime, limit: int = 100) -> list[tuple[str, int]]:
+        """``(run_id, seq)`` of SCHEDULED activity steps whose schedule-to-start deadline has elapsed."""
+        with self.Session() as s:
+            rows = s.execute(
+                select(WorkflowStep.run_id, WorkflowStep.seq)
+                .where(
+                    WorkflowStep.kind == "ACTIVITY",
+                    WorkflowStep.status == "SCHEDULED",
+                    WorkflowStep.schedule_to_start_at.is_not(None),
+                    WorkflowStep.schedule_to_start_at <= now,
+                )
+                .order_by(WorkflowStep.schedule_to_start_at)
+                .limit(limit)
+            ).all()
+            return [(run_id, seq) for run_id, seq in rows]
+
+    def find_due_execution_timeouts(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Run IDs of non-terminal runs whose execution_timeout_at has elapsed."""
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id)
+                    .where(
+                        WorkflowRun.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                        WorkflowRun.execution_timeout_at.is_not(None),
+                        WorkflowRun.execution_timeout_at <= now,
+                    )
+                    .order_by(WorkflowRun.execution_timeout_at)
+                    .limit(limit)
+                )
+            )
+
+    def find_due_run_timeouts(self, *, now: datetime, limit: int = 100) -> list[str]:
+        """Run IDs of non-terminal runs whose run_timeout_at has elapsed."""
+        with self.Session() as s:
+            return list(
+                s.scalars(
+                    select(WorkflowRun.id)
+                    .where(
+                        WorkflowRun.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                        WorkflowRun.run_timeout_at.is_not(None),
+                        WorkflowRun.run_timeout_at <= now,
+                    )
+                    .order_by(WorkflowRun.run_timeout_at)
+                    .limit(limit)
+                )
+            )
+
     # --------------------------------------------------------------- signals
     def add_signal(
         self,
@@ -516,19 +617,22 @@ class SqlStore:
                 _apply(s)
 
     def match_signals(self, run_id: str, *, session: Session) -> int:
-        """Pair queued signals with waiting steps, FIFO within each name.
+        """Pair queued signals with waiting steps (SIGNAL_WAIT or SIGNAL_HANDLER), FIFO within each name.
 
-        For every SCHEDULED SIGNAL_WAIT step (oldest seq first) with an unconsumed
-        signal of the same name (oldest first), completes the step with the signal's
-        payload and stamps ``consumed_seq``. Returns how many waits were satisfied;
-        the caller re-ticks the run when that is non-zero.
+        For every SCHEDULED SIGNAL_WAIT or SIGNAL_HANDLER step (oldest seq first) with
+        an unconsumed signal of the same name (oldest first), completes the step with
+        the signal's payload and stamps ``consumed_seq``. Returns how many waits were
+        satisfied; the caller re-ticks the run when that is non-zero.
+
+        SIGNAL_HANDLER steps (registered via ``ctx.set_signal_handler``) are
+        background handlers — they consume the signal without blocking the workflow.
         """
         waits = list(
             session.scalars(
                 select(WorkflowStep)
                 .where(
                     WorkflowStep.run_id == run_id,
-                    WorkflowStep.kind == "SIGNAL_WAIT",
+                    WorkflowStep.kind.in_(("SIGNAL_WAIT", "SIGNAL_HANDLER")),
                     WorkflowStep.status == "SCHEDULED",
                 )
                 .order_by(WorkflowStep.seq)
@@ -631,13 +735,27 @@ class SqlStore:
             return False
 
     # ------------------------------------------------------------- schedules
-    def create_schedule(self, *, id: str, name: str, cron: str, input: dict, next_fire_at: datetime) -> bool:
+    def create_schedule(
+        self,
+        *,
+        id: str,
+        name: str,
+        cron: str,
+        input: dict,
+        next_fire_at: datetime,
+        overlap_policy: str = "ALLOW",
+    ) -> bool:
         """Insert a recurring schedule. Idempotent on ``id``: returns ``False`` (and
         leaves the existing row untouched) if one with this id already exists."""
         with self.Session.begin() as s:
             if s.get(WorkflowSchedule, id) is not None:
                 return False
-            s.add(WorkflowSchedule(id=id, name=name, cron=cron, input=input, active=True, next_fire_at=next_fire_at))
+            s.add(
+                WorkflowSchedule(
+                    id=id, name=name, cron=cron, input=input, active=True,
+                    next_fire_at=next_fire_at, overlap_policy=overlap_policy,
+                )
+            )
         return True
 
     def get_schedule(self, schedule_id: str) -> WorkflowSchedule | None:
@@ -663,17 +781,18 @@ class SqlStore:
 
     def claim_due_schedules(
         self, *, now: datetime, limit: int, compute_next: Callable[[str, datetime], datetime]
-    ) -> list[tuple[str, str, dict]]:
+    ) -> list[tuple[str, str, dict, str | None, str | None]]:
         """Claim every active schedule whose ``next_fire_at`` has elapsed.
 
         In one transaction, advances each due schedule's ``next_fire_at`` to its next
         cron time (via ``compute_next(cron, now)``) and stamps ``last_fired_at`` —
-        *claiming* it so a concurrent scan won't fire it again. Returns ``(id, name,
-        input)`` for each, so the caller can start the runs after the claim commits.
+        *claiming* it so a concurrent scan won't fire it again. Returns
+        ``(id, name, input, overlap_policy, last_run_id)`` for each, so the caller can
+        apply the overlap policy and start the runs after the claim commits.
         On Postgres the rows are locked ``FOR UPDATE SKIP LOCKED`` to make concurrent
         scanners safe; missed ticks are skipped rather than backfilled.
         """
-        claimed: list[tuple[str, str, dict]] = []
+        claimed: list[tuple[str, str, dict, str | None, str | None]] = []
         with self.Session.begin() as s:
             query = (
                 select(WorkflowSchedule)
@@ -684,7 +803,7 @@ class SqlStore:
             if self.is_postgres:
                 query = query.with_for_update(skip_locked=True)
             for sch in s.scalars(query).all():
-                claimed.append((sch.id, sch.name, dict(sch.input or {})))
+                claimed.append((sch.id, sch.name, dict(sch.input or {}), sch.overlap_policy, sch.last_run_id))
                 sch.last_fired_at = now
                 sch.next_fire_at = compute_next(sch.cron, now)
         return claimed
