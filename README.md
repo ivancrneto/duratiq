@@ -1,5 +1,11 @@
 # Duratiq
 
+[![test](https://github.com/ivancrneto/duratiq/actions/workflows/test.yml/badge.svg)](https://github.com/ivancrneto/duratiq/actions/workflows/test.yml)
+[![build](https://github.com/ivancrneto/duratiq/actions/workflows/build.yml/badge.svg)](https://github.com/ivancrneto/duratiq/actions/workflows/build.yml)
+[![PyPI](https://img.shields.io/pypi/v/duratiq.svg)](https://pypi.org/project/duratiq/)
+[![Python versions](https://img.shields.io/pypi/pyversions/duratiq.svg)](https://pypi.org/project/duratiq/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Durable workflows for [Dramatiq](https://dramatiq.io/).** "Temporal, but for
 Dramatiq" — durable execution that runs on the stack you already have (Dramatiq
 actors, your broker, Postgres), with no separate orchestration cluster.
