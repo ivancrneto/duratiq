@@ -6,6 +6,8 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-17
+
 Temporal-parity additions across engine operations, run metadata, and execution
 primitives. All new columns are nullable and added by migrations `0006`–`0010`,
 so existing runs and stores upgrade cleanly.
@@ -142,5 +144,6 @@ for dev), so a run resumes exactly where it left off after a crash.
 - Typed (`py.typed`, PEP 561). Optional extras: `dramatiq`, `redis`, `postgres`,
   `migrations`, `otel`, `examples`, `dev`.
 
-[Unreleased]: https://github.com/ivancrneto/duratiq/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ivancrneto/duratiq/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ivancrneto/duratiq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ivancrneto/duratiq/releases/tag/v0.1.0
