@@ -28,9 +28,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     with op.batch_alter_table("workflow_schedules", schema=None) as batch_op:
-        batch_op.add_column(
-            sa.Column("overlap_policy", sa.String(length=20), nullable=True, server_default="ALLOW")
-        )
+        batch_op.add_column(sa.Column("overlap_policy", sa.String(length=20), nullable=True, server_default="ALLOW"))
 
 
 def downgrade() -> None:

@@ -28,6 +28,7 @@ def ns():
 
 # --- ctx.now() ---
 
+
 def test_ctx_now_returns_datetime(ns):
     captured = {}
 
@@ -105,6 +106,7 @@ def test_ctx_now_is_stable_after_crash_resume(ns):
 
 
 # --- ctx.info() ---
+
 
 def test_ctx_info_returns_workflow_info(ns):
     info_captured = {}

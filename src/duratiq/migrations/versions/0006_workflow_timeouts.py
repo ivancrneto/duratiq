@@ -35,9 +35,7 @@ def upgrade() -> None:
         batch_op.create_index(
             batch_op.f("ix_workflow_runs_execution_timeout_at"), ["execution_timeout_at"], unique=False
         )
-        batch_op.create_index(
-            batch_op.f("ix_workflow_runs_run_timeout_at"), ["run_timeout_at"], unique=False
-        )
+        batch_op.create_index(batch_op.f("ix_workflow_runs_run_timeout_at"), ["run_timeout_at"], unique=False)
 
 
 def downgrade() -> None:

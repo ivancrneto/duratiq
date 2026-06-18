@@ -197,7 +197,9 @@ def test_workflow_id_allow_duplicate_failed_only() -> None:
 
     # After terminating (marking FAILED), can start a new one
     ns.engine.terminate(run_id1)
-    run_id2 = ns.engine.start("instant_fonly", workflow_id="job-789", workflow_id_reuse_policy="ALLOW_DUPLICATE_FAILED_ONLY")
+    run_id2 = ns.engine.start(
+        "instant_fonly", workflow_id="job-789", workflow_id_reuse_policy="ALLOW_DUPLICATE_FAILED_ONLY"
+    )
     assert run_id1 != run_id2
 
 

@@ -47,6 +47,7 @@ def ns():
 
 # --- terminate ---
 
+
 def test_terminate_marks_run_failed(ns):
     run_id = ns.engine.start("simple")
     assert ns.engine.terminate(run_id) is True
@@ -102,6 +103,7 @@ def test_terminate_notifies_parent_step_as_failed(ns):
 
 # --- cancel still works unchanged ---
 
+
 def test_cancel_marks_cancelled(ns):
     run_id = ns.engine.start("simple")
     assert ns.engine.cancel(run_id) is True
@@ -109,6 +111,7 @@ def test_cancel_marks_cancelled(ns):
 
 
 # --- batch_cancel ---
+
 
 def test_batch_cancel_returns_count(ns):
     ids = [ns.engine.start("simple") for _ in range(5)]
@@ -136,6 +139,7 @@ def test_batch_cancel_filter_by_name(ns):
 
 # --- batch_terminate ---
 
+
 def test_batch_terminate_marks_failed(ns):
     ids = [ns.engine.start("simple") for _ in range(3)]
     count = ns.engine.batch_terminate(status="PENDING", reason="mass kill")
@@ -147,6 +151,7 @@ def test_batch_terminate_marks_failed(ns):
 
 
 # --- reset_to_step ---
+
 
 def test_reset_to_step_requires_failed_run(ns):
     run_id = ns.engine.start("simple")
@@ -217,9 +222,7 @@ def test_reset_to_step_replays_from_checkpoint():
         side["step_b"] += 1
         return "b_fixed"
 
-    reg._activities["step_b"] = reg._activities["step_b"].__class__(
-        fn=step_b_fixed, name="step_b", max_retries=3
-    )
+    reg._activities["step_b"] = reg._activities["step_b"].__class__(fn=step_b_fixed, name="step_b", max_retries=3)
 
     engine.driver.run_until_idle()
     run = engine.get(run_id)
@@ -231,6 +234,7 @@ def test_reset_to_step_replays_from_checkpoint():
 
 
 # --- update_with_start ---
+
 
 def test_update_with_start_delivers_update_atomically():
     reg = Registry()

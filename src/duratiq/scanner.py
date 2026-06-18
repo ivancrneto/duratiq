@@ -61,7 +61,16 @@ class Scanner:
         recovery_older_than: float = 60.0,
         limit: int = 100,
     ) -> None:
-        if min(timer_interval, schedule_interval, recovery_interval, activity_timeout_interval, workflow_timeout_interval) <= 0:
+        if (
+            min(
+                timer_interval,
+                schedule_interval,
+                recovery_interval,
+                activity_timeout_interval,
+                workflow_timeout_interval,
+            )
+            <= 0
+        ):
             raise ValueError("scan intervals must be positive")
         self.engine = engine
         self.timer_interval = timer_interval
@@ -187,7 +196,10 @@ def main(argv: list[str] | None = None) -> int:
         "--activity-timeout-interval", type=float, default=5.0, help="seconds between activity-timeout scans"
     )
     parser.add_argument(
-        "--workflow-timeout-interval", type=float, default=10.0, help="seconds between workflow execution/run timeout scans"
+        "--workflow-timeout-interval",
+        type=float,
+        default=10.0,
+        help="seconds between workflow execution/run timeout scans",
     )
     parser.add_argument("--recovery-interval", type=float, default=30.0, help="seconds between recovery scans")
     parser.add_argument("--recovery-older-than", type=float, default=60.0, help="re-tick runs idle longer than this")

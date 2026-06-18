@@ -128,7 +128,9 @@ class Engine:
                 elif policy == "TERMINATE_IF_RUNNING":
                     for run in existing_runs:
                         if run.status not in _TERMINAL:
-                            self._terminate(run.id, reason="terminated by workflow_id_reuse_policy", notify_parent=False)
+                            self._terminate(
+                                run.id, reason="terminated by workflow_id_reuse_policy", notify_parent=False
+                            )
         run_id = uuid4().hex
         # Workflow-level timeouts: per-call override takes priority over decorator default.
         exec_secs = execution_timeout if execution_timeout is not None else wf.execution_timeout
@@ -361,9 +363,7 @@ class Engine:
                 # execution_timeout_at persists across continuations; run_timeout_at is fresh.
                 run_secs = wf.run_timeout
                 run_timeout_at = utcnow() + timedelta(seconds=run_secs) if run_secs else None
-                self.store.continue_as_new(
-                    run_id, new_input=can.input, session=session, run_timeout_at=run_timeout_at
-                )
+                self.store.continue_as_new(run_id, new_input=can.input, session=session, run_timeout_at=run_timeout_at)
                 restart = True
             except (ActivityFailed, ChildWorkflowFailed) as exc:
                 terminal_status, terminal_error = "FAILED", {"type": type(exc).__name__, "message": str(exc)}
@@ -564,8 +564,12 @@ class Engine:
                         try:
                             local_result = sla.fn(*sla.args, **sla.kwargs)
                             self.store.complete_step(
-                                run_id, sla.seq, status="COMPLETED",
-                                result={"value": local_result}, attempt=attempt, session=session,
+                                run_id,
+                                sla.seq,
+                                status="COMPLETED",
+                                result={"value": local_result},
+                                attempt=attempt,
+                                session=session,
                             )
                             last_error = None
                             break
@@ -575,8 +579,12 @@ class Engine:
                                 attempt += 1
                             else:
                                 self.store.complete_step(
-                                    run_id, sla.seq, status="FAILED",
-                                    error=last_error, attempt=attempt, session=session,
+                                    run_id,
+                                    sla.seq,
+                                    status="FAILED",
+                                    error=last_error,
+                                    attempt=attempt,
+                                    session=session,
                                 )
                                 break
                 matched += 1  # request a re-tick so workflow replays past the now-resolved steps
@@ -796,7 +804,9 @@ class Engine:
                     "type": "ScheduleToStartTimeout",
                     "message": f"activity {step.name!r} was not started before its schedule-to-start deadline",
                 }
-                self.store.complete_step(run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session)
+                self.store.complete_step(
+                    run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session
+                )
             self._emit(events.ACTIVITY_FAILED, run_id, name=step.name, seq=seq, attempt=step.attempt, error=error)
             self.driver.request_tick(run_id)
             handled += 1
@@ -912,7 +922,9 @@ class Engine:
                     elif policy == "REPLACE":
                         self._cancel(last_run_id, notify_parent=False)
                     elif policy == "TERMINATE":
-                        self._terminate(last_run_id, reason="terminated by schedule overlap policy", notify_parent=False)
+                        self._terminate(
+                            last_run_id, reason="terminated by schedule overlap policy", notify_parent=False
+                        )
             run_id = self.start(name, **input)
             self.store.set_schedule_last_run(schedule_id, run_id)
             started += 1
@@ -1154,9 +1166,7 @@ class Engine:
             self.driver.request_tick(run_id)
         return True
 
-    def update_with_start(
-        self, name: str, update_name: str, *args: Any, **kwargs: Any
-    ) -> tuple[str, str]:
+    def update_with_start(self, name: str, update_name: str, *args: Any, **kwargs: Any) -> tuple[str, str]:
         """Atomically start a workflow and deliver an update before the first tick.
 
         The run is created and the update is queued inside the same locked transaction,

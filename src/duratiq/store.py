@@ -495,9 +495,7 @@ class SqlStore:
         without losing the steps that led up to it.
         """
         steps_to_delete = list(
-            session.scalars(
-                select(WorkflowStep).where(WorkflowStep.run_id == run_id, WorkflowStep.seq > seq)
-            )
+            session.scalars(select(WorkflowStep).where(WorkflowStep.run_id == run_id, WorkflowStep.seq > seq))
         )
         for step in steps_to_delete:
             if step.kind == "TIMER":
@@ -752,8 +750,13 @@ class SqlStore:
                 return False
             s.add(
                 WorkflowSchedule(
-                    id=id, name=name, cron=cron, input=input, active=True,
-                    next_fire_at=next_fire_at, overlap_policy=overlap_policy,
+                    id=id,
+                    name=name,
+                    cron=cron,
+                    input=input,
+                    active=True,
+                    next_fire_at=next_fire_at,
+                    overlap_policy=overlap_policy,
                 )
             )
         return True
