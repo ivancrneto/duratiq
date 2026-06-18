@@ -1,6 +1,6 @@
 [project]
 name = "duratiq"
-version = "0.1.0"
+version = "0.2.0"
 description = "Durable workflows for Dramatiq — Temporal-style durable execution on your existing Dramatiq + Postgres stack."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -66,6 +66,19 @@ packages = ["src/duratiq"]
 artifacts = [
     "src/duratiq/migrations/script.py.mako",
     "src/duratiq/py.typed",
+]
+
+# Scope the sdist explicitly so it's deterministic and minimal — never sweeping in
+# local working-tree state (node_modules, .claude, build artifacts) that the default
+# whole-directory sdist would otherwise include. `only-include` restricts the walk to
+# exactly these paths (pyproject.toml is always included).
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/duratiq",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "alembic.ini",
 ]
 
 [tool.pytest.ini_options]
