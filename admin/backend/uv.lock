@@ -92,7 +92,7 @@ redis = [
 
 [[package]]
 name = "duratiq"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "../../" }
 dependencies = [
     { name = "sqlalchemy" },
@@ -100,10 +100,15 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.13" },
+    { name = "alembic", marker = "extra == 'migrations'", specifier = ">=1.13" },
     { name = "dramatiq", marker = "extra == 'dev'", specifier = ">=1.16" },
     { name = "dramatiq", marker = "extra == 'dramatiq'", specifier = ">=1.16" },
     { name = "dramatiq", marker = "extra == 'examples'", specifier = ">=1.16" },
     { name = "dramatiq", marker = "extra == 'redis'", specifier = ">=1.16" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "opentelemetry-sdk", marker = "extra == 'dev'", specifier = ">=1.20" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'examples'", specifier = ">=3.1" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -111,7 +116,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5" },
     { name = "sqlalchemy", specifier = ">=2.0" },
 ]
-provides-extras = ["dramatiq", "redis", "postgres", "examples", "dev"]
+provides-extras = ["dramatiq", "redis", "postgres", "migrations", "otel", "examples", "dev"]
 
 [[package]]
 name = "duratiq-admin"

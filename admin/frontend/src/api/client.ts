@@ -19,6 +19,8 @@ export interface Run {
   input: unknown;
   result: unknown;
   error: unknown;
+  memo: unknown;
+  workflow_id: string | null;
   idempotency_key: string | null;
   parent_run_id: string | null;
   parent_seq: number | null;
@@ -123,6 +125,12 @@ export const api = {
   cancelRun: (id: string) =>
     apiFetch<ActionResult>(`/api/runs/${encodeURIComponent(id)}/cancel`, {
       method: "POST",
+    }),
+  terminateRun: (id: string, reason?: string) =>
+    apiFetch<ActionResult>(`/api/runs/${encodeURIComponent(id)}/terminate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: reason ?? null }),
     }),
   retryRun: (id: string) =>
     apiFetch<ActionResult>(`/api/runs/${encodeURIComponent(id)}/retry`, {

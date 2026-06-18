@@ -295,3 +295,81 @@ def test_signal_without_broker_503(client: TestClient) -> None:
     # No get_enqueue override -> broker_url empty -> fail fast, nothing stored.
     res = client.post("/api/runs/S789/signal", json={"name": "go"})
     assert res.status_code == 503
+
+
+# --- terminate + memo (Temporal-parity admin surface) ---
+
+
+def test_terminate_suspended_run(client: TestClient) -> None:
+    res = client.post("/api/runs/S789/terminate", json={"reason": "ops killed it"})
+    assert res.status_code == 200
+    assert res.json()["status"] == "FAILED"
+    body = client.get("/api/runs/S789").json()
+    assert body["status"] == "FAILED"
+    assert body["error"] == {"type": "WorkflowTerminated", "message": "ops killed it"}
+
+
+def test_terminate_without_reason(client: TestClient) -> None:
+    res = client.post("/api/runs/S789/terminate")
+    assert res.status_code == 200
+    body = client.get("/api/runs/S789").json()
+    assert body["error"] == {"type": "WorkflowTerminated", "message": None}
+
+
+def test_terminate_terminal_run_409(client: TestClient) -> None:
+    res = client.post("/api/runs/A123/terminate")  # COMPLETED
+    assert res.status_code == 409
+
+
+def test_terminate_missing_run_404(client: TestClient) -> None:
+    assert client.post("/api/runs/NOPE/terminate").status_code == 404
+
+
+def test_terminate_cascades_to_children(client: TestClient, store: SqlStore) -> None:
+    with store.Session.begin() as s:
+        s.add(
+            WorkflowRun(
+                id="TC1", name="ship", version=1, input={}, status="SUSPENDED", parent_run_id="S789", parent_seq=0
+            )
+        )
+        s.add(
+            WorkflowRun(
+                id="TGC1", name="label", version=1, input={}, status="SUSPENDED", parent_run_id="TC1", parent_seq=0
+            )
+        )
+        # An already-done child must be left untouched.
+        s.add(
+            WorkflowRun(
+                id="TC2", name="ship", version=1, input={}, status="COMPLETED", parent_run_id="S789", parent_seq=1
+            )
+        )
+
+    assert client.post("/api/runs/S789/terminate").status_code == 200
+    assert client.get("/api/runs/S789").json()["status"] == "FAILED"
+    assert client.get("/api/runs/TC1").json()["status"] == "FAILED"
+    assert client.get("/api/runs/TGC1").json()["status"] == "FAILED"
+    assert client.get("/api/runs/TC2").json()["status"] == "COMPLETED"  # already done
+
+
+def test_run_detail_exposes_memo_and_workflow_id(client: TestClient, store: SqlStore) -> None:
+    with store.Session.begin() as s:
+        s.add(
+            WorkflowRun(
+                id="M1",
+                name="order",
+                version=1,
+                input={},
+                status="SUSPENDED",
+                memo={"requested_by": "ops@co", "ticket": "OPS-42"},
+                workflow_id="order-A1",
+            )
+        )
+    body = client.get("/api/runs/M1").json()
+    assert body["memo"] == {"requested_by": "ops@co", "ticket": "OPS-42"}
+    assert body["workflow_id"] == "order-A1"
+
+
+def test_run_memo_null_when_unset(client: TestClient) -> None:
+    body = client.get("/api/runs/A123").json()
+    assert body["memo"] is None
+    assert body["workflow_id"] is None
