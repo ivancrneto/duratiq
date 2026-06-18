@@ -58,6 +58,38 @@ def _cancel_children(store: SqlStore, run_id: str) -> None:
         _cancel_children(store, child_id)
 
 
+def terminate_run(store: SqlStore, run_id: str, reason: str | None = None) -> str:
+    """Mark a non-terminal run FAILED with a ``WorkflowTerminated`` error, cascading.
+
+    The hard counterpart to :func:`cancel_run`, mirroring ``Engine.terminate``: where
+    cancel records ``CANCELLED``, terminate records ``FAILED`` with a
+    ``WorkflowTerminated`` error dict, and its cascade terminates running children the
+    same way. (As with cancel, the upward parent notification needs the registry and is
+    left to the engine — see the admin README.) Returns the new status.
+    """
+    error = {"type": "WorkflowTerminated", "message": reason}
+    with store.locked_run(run_id) as session:
+        run = store.get_run(run_id, session=session)
+        if run is None:
+            raise RunNotFound
+        if run.status in _TERMINAL:
+            raise NotActionable(f"run is {run.status}; only non-terminal runs can be terminated")
+        store.update_run(run_id, session=session, status="FAILED", error=error)
+    _terminate_children(store, run_id, error)
+    return "FAILED"
+
+
+def _terminate_children(store: SqlStore, run_id: str, error: dict[str, Any]) -> None:
+    """Recursively terminate a run's non-terminal child workflows."""
+    for child_id in store.find_active_children(run_id):
+        with store.locked_run(child_id) as session:
+            child = store.get_run(child_id, session=session)
+            if child is None or child.status in _TERMINAL:
+                continue
+            store.update_run(child_id, session=session, status="FAILED", error=error)
+        _terminate_children(store, child_id, error)
+
+
 def signal_run(store: SqlStore, run_id: str, name: str, payload: Any = None) -> str:
     """Deliver a signal to a non-terminal run; returns its status after delivery.
 

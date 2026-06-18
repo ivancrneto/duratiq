@@ -36,6 +36,15 @@ export function RunDetail() {
     onError: (e: Error) => toast.error("Cancel failed", { description: e.message }),
   });
 
+  const terminate = useMutation({
+    mutationFn: (reason: string) => api.terminateRun(runId, reason || undefined),
+    onSuccess: () => {
+      toast.success("Run terminated", { description: "Marked FAILED / WorkflowTerminated." });
+      refresh();
+    },
+    onError: (e: Error) => toast.error("Terminate failed", { description: e.message }),
+  });
+
   const retry = useMutation({
     mutationFn: () => api.retryRun(runId),
     onSuccess: () => {
@@ -88,7 +97,7 @@ export function RunDetail() {
           <div className="ml-auto flex gap-2">
             {!isTerminal && (
               <Button
-                variant="destructive"
+                variant="outline"
                 size="sm"
                 disabled={cancel.isPending}
                 onClick={() =>
@@ -96,6 +105,21 @@ export function RunDetail() {
                 }
               >
                 Cancel
+              </Button>
+            )}
+            {!isTerminal && (
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={terminate.isPending}
+                onClick={() => {
+                  const reason = window.prompt(
+                    `Terminate run ${r.id}? This marks it FAILED (WorkflowTerminated) and cascades to children.\n\nReason (optional):`,
+                  );
+                  if (reason !== null) terminate.mutate(reason);
+                }}
+              >
+                Terminate
               </Button>
             )}
             {r.status === "FAILED" && (
@@ -135,9 +159,22 @@ export function RunDetail() {
         </Card>
       )}
 
+      {r.workflow_id && (
+        <Card className="p-3">
+          <div className="text-xs text-muted-foreground">Workflow ID</div>
+          <div className="font-mono text-sm">{r.workflow_id}</div>
+        </Card>
+      )}
+
       {Object.keys(r.search_attributes).length > 0 && (
         <Labeled label="Search attributes">
           <JsonBlock value={r.search_attributes} />
+        </Labeled>
+      )}
+
+      {r.memo != null && (
+        <Labeled label="Memo">
+          <JsonBlock value={r.memo} />
         </Labeled>
       )}
 

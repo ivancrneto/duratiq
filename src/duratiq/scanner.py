@@ -57,16 +57,27 @@ class Scanner:
         schedule_interval: float = 60.0,
         recovery_interval: float = 30.0,
         activity_timeout_interval: float = 5.0,
+        workflow_timeout_interval: float = 10.0,
         recovery_older_than: float = 60.0,
         limit: int = 100,
     ) -> None:
-        if min(timer_interval, schedule_interval, recovery_interval, activity_timeout_interval) <= 0:
+        if (
+            min(
+                timer_interval,
+                schedule_interval,
+                recovery_interval,
+                activity_timeout_interval,
+                workflow_timeout_interval,
+            )
+            <= 0
+        ):
             raise ValueError("scan intervals must be positive")
         self.engine = engine
         self.timer_interval = timer_interval
         self.schedule_interval = schedule_interval
         self.recovery_interval = recovery_interval
         self.activity_timeout_interval = activity_timeout_interval
+        self.workflow_timeout_interval = workflow_timeout_interval
         self.recovery_older_than = recovery_older_than
         self.limit = limit
         self._stop = threading.Event()
@@ -84,6 +95,15 @@ class Scanner:
     def _scan_activity_timeouts(self) -> int:
         return self.engine.fire_due_activity_timeouts(limit=self.limit)
 
+    def _scan_execution_timeouts(self) -> int:
+        return self.engine.fire_due_execution_timeouts(limit=self.limit)
+
+    def _scan_run_timeouts(self) -> int:
+        return self.engine.fire_due_run_timeouts(limit=self.limit)
+
+    def _scan_schedule_to_start_timeouts(self) -> int:
+        return self.engine.fire_due_schedule_to_start_timeouts(limit=self.limit)
+
     def run_once(self, *, now: datetime | None = None) -> dict[str, int]:
         """Run every scan once and return how many runs each advanced.
 
@@ -97,6 +117,9 @@ class Scanner:
             "timers": self.engine.fire_due_timers(now=now, limit=self.limit),
             "schedules": self.engine.fire_due_schedules(now=now, limit=self.limit),
             "activity_timeouts": self.engine.fire_due_activity_timeouts(now=now, limit=self.limit),
+            "schedule_to_start_timeouts": self.engine.fire_due_schedule_to_start_timeouts(now=now, limit=self.limit),
+            "execution_timeouts": self.engine.fire_due_execution_timeouts(now=now, limit=self.limit),
+            "run_timeouts": self.engine.fire_due_run_timeouts(now=now, limit=self.limit),
             "recovery": self.engine.recover_stalled(
                 older_than_seconds=self.recovery_older_than, now=now, limit=self.limit
             ),
@@ -115,6 +138,9 @@ class Scanner:
             ("timers", self._scan_timers, self.timer_interval, 0.0),
             ("schedules", self._scan_schedules, self.schedule_interval, 0.0),
             ("activity_timeouts", self._scan_activity_timeouts, self.activity_timeout_interval, 0.0),
+            ("schedule_to_start_timeouts", self._scan_schedule_to_start_timeouts, self.activity_timeout_interval, 0.0),
+            ("execution_timeouts", self._scan_execution_timeouts, self.workflow_timeout_interval, 0.0),
+            ("run_timeouts", self._scan_run_timeouts, self.workflow_timeout_interval, 0.0),
             ("recovery", self._scan_recovery, self.recovery_interval, 0.0),
         ]
         # (name, fn, interval, next_deadline) using a monotonic clock.
@@ -169,6 +195,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--activity-timeout-interval", type=float, default=5.0, help="seconds between activity-timeout scans"
     )
+    parser.add_argument(
+        "--workflow-timeout-interval",
+        type=float,
+        default=10.0,
+        help="seconds between workflow execution/run timeout scans",
+    )
     parser.add_argument("--recovery-interval", type=float, default=30.0, help="seconds between recovery scans")
     parser.add_argument("--recovery-older-than", type=float, default=60.0, help="re-tick runs idle longer than this")
     parser.add_argument("--limit", type=int, default=100, help="max runs advanced per scan")
@@ -184,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         schedule_interval=args.schedule_interval,
         recovery_interval=args.recovery_interval,
         activity_timeout_interval=args.activity_timeout_interval,
+        workflow_timeout_interval=args.workflow_timeout_interval,
         recovery_older_than=args.recovery_older_than,
         limit=args.limit,
     )

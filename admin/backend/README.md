@@ -26,15 +26,22 @@ local only).
 | GET    | `/api/runs`                | List runs. Filters: `status`, `name`; pagination: `limit` (≤200), `offset`. |
 | GET    | `/api/runs/{run_id}`       | One run.                                 |
 | GET    | `/api/runs/{run_id}/steps` | Ordered step history for a run.          |
-| POST   | `/api/runs/{run_id}/cancel`| Mark a non-terminal run CANCELLED. 409 if already terminal. |
+| POST   | `/api/runs/{run_id}/cancel`| Mark a non-terminal run CANCELLED (cascades to children). 409 if already terminal. |
+| POST   | `/api/runs/{run_id}/terminate`| Mark a non-terminal run FAILED / WorkflowTerminated (cascades). Optional `{"reason": "..."}`. 409 if already terminal. |
 | POST   | `/api/runs/{run_id}/retry` | Re-arm a FAILED run and enqueue a tick. 409 if not FAILED, 503 if no broker. |
 
-### Actions (cancel / retry)
+A run's `memo` (immutable start-time metadata) and `workflow_id` are included on the
+`GET /api/runs/{run_id}` response alongside its search attributes.
 
-Both are state-changing, so they require the admin token in any shared setting.
+### Actions (cancel / terminate / retry)
+
+All are state-changing, so they require the admin token in any shared setting.
 
 - **Cancel** is store-only: it writes `status=CANCELLED`, which the engine's
   `tick()` already honours. Works from the admin with no extra config.
+- **Terminate** is the hard counterpart: it writes `status=FAILED` with a
+  `WorkflowTerminated` error (and an optional reason), cascading to running children.
+  Also store-only — no broker needed.
 - **Retry** resets the failed run to `PENDING` (dropping the failed step) and
   enqueues a `duratiq_tick` message so a running worker resumes it. The admin
   holds no workflow registry, so it can't tick itself — set `DURATIQ_BROKER_URL`

@@ -14,7 +14,16 @@ from duratiq import SqlStore
 from .. import actions, repository
 from ..db import get_store
 from ..deps import get_enqueue, get_session, require_token
-from ..schemas import ActionResult, RunDetailOut, RunListOut, RunOut, SignalIn, StatsOut, StepOut
+from ..schemas import (
+    ActionResult,
+    RunDetailOut,
+    RunListOut,
+    RunOut,
+    SignalIn,
+    StatsOut,
+    StepOut,
+    TerminateIn,
+)
 
 
 def _parse_search_attributes(sa: str | None) -> dict[str, Any] | None:
@@ -80,6 +89,21 @@ def get_steps(run_id: str, session: Session = Depends(get_session)) -> list[Step
 def cancel_run(run_id: str, store: SqlStore = Depends(get_store)) -> ActionResult:
     try:
         status = actions.cancel_run(store, run_id)
+    except actions.RunNotFound:
+        raise HTTPException(status_code=404, detail="run not found") from None
+    except actions.NotActionable as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from None
+    return ActionResult(id=run_id, status=status)
+
+
+@router.post("/runs/{run_id}/terminate", response_model=ActionResult)
+def terminate_run(
+    run_id: str,
+    body: TerminateIn | None = None,
+    store: SqlStore = Depends(get_store),
+) -> ActionResult:
+    try:
+        status = actions.terminate_run(store, run_id, body.reason if body else None)
     except actions.RunNotFound:
         raise HTTPException(status_code=404, detail="run not found") from None
     except actions.NotActionable as exc:

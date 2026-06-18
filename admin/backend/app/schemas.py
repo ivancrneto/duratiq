@@ -18,6 +18,8 @@ class RunOut(BaseModel):
     input: Any | None = None
     result: Any | None = None
     error: Any | None = None
+    memo: Any | None = None
+    workflow_id: str | None = None
     idempotency_key: str | None = None
     parent_run_id: str | None = None
     parent_seq: int | None = None
@@ -68,6 +70,12 @@ class SignalIn(BaseModel):
 
     name: str
     payload: Any | None = None
+
+
+class TerminateIn(BaseModel):
+    """Body for the terminate action; the reason is recorded on the error."""
+
+    reason: str | None = None
 
 
 class ActionResult(BaseModel):

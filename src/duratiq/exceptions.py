@@ -81,3 +81,19 @@ class UpdateFailed(Exception):
 
 class DeterminismError(Exception):
     """Raised when replay diverges from recorded history (e.g. step kind/name mismatch)."""
+
+
+class _ScopeCancelled(BaseException):  # noqa: N818 - internal control-flow, not a user exception
+    """Raised internally when a CancellationScope is cancelled. Never surfaces to user code."""
+
+
+class WorkflowTerminated(Exception):
+    """Raised (as an error payload) when a run is forcibly terminated via ``engine.terminate``.
+
+    Unlike cancellation (which preserves the ``CANCELLED`` status), termination marks
+    the run ``FAILED`` with this error so callers can distinguish the two causes.
+    """
+
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason or "workflow terminated"
+        super().__init__(self.reason)

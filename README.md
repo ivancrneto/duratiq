@@ -13,14 +13,19 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > **The engine is feature-complete.** It runs activities with per-activity retries,
 > replay and memoization, crash recovery, and a recovery scanner; durable timers
 > (`ctx.sleep`), signals (`ctx.wait_signal`, with timeouts), side effects
-> (`ctx.side_effect`), a parallel barrier (`ctx.gather`), and racing branches
-> (`ctx.select`); child workflows (`ctx.child_workflow`, with cancellation cascade),
-> `continue-as-new`, `ctx.patched` versioning, recurring cron schedules, and
-> idempotent activities (`activity_info` / `run_once`); activity start-to-close
-> timeouts and heartbeats; queries and updates; typed search attributes; a pluggable
+> (`ctx.side_effect`), deterministic time (`ctx.now`) and run metadata (`ctx.info`),
+> a parallel barrier (`ctx.gather`), and racing branches (`ctx.select`); child
+> workflows (`ctx.child_workflow`, with cancellation cascade), cancellation scopes
+> (`ctx.cancellation_scope` + `ctx.set_signal_handler`), local activities
+> (`ctx.local_activity`), `continue-as-new`, `ctx.patched` versioning, recurring cron
+> schedules (with overlap policies), dynamic catch-all handlers, and idempotent
+> activities (`activity_info` / `run_once`); activity start-to-close, schedule-to-start,
+> and schedule-to-close timeouts and heartbeats; workflow-level execution/run timeouts;
+> queries and updates; typed search attributes and immutable memo; workflow IDs with
+> reuse policies; `terminate`, batch cancel/terminate, and `reset_to_step`; a pluggable
 > payload codec; OpenTelemetry tracing and a lifecycle-event listener; Alembic
 > migrations; a packaged scanner runner; and a read/act admin UI (see [`admin/`](admin/)).
-> See the [CHANGELOG](CHANGELOG.md) for the full 0.1.0 surface.
+> See the [CHANGELOG](CHANGELOG.md) for the full surface.
 
 ## The idea
 
@@ -143,14 +148,28 @@ skipped rather than backfilled. Pass `schedule_id=` to make registration idempot
 `pause_schedule` / `resume_schedule` / `delete_schedule` manage the lifecycle. Tests
 pass `now=...` to fast-forward without waiting on the clock.
 
+**Overlap policy.** When a schedule comes due while its previous run is still in
+flight, `create_schedule(..., overlap_policy=...)` decides what happens:
+
+```python
+engine.create_schedule("nightly_sync", "0 2 * * *", overlap_policy="SKIP")
+```
+
+`ALLOW` (the default) always starts the new run; `SKIP` leaves the running one alone
+and skips this fire; `REPLACE` cancels the previous run first; `TERMINATE` terminates
+it first (terminal `FAILED` / `WorkflowTerminated`). The policy only matters while the
+last run is non-terminal — once it's done, every policy just starts the next run.
+
 ## The scanner
 
-Three things have to run on a cadence for a deployment to make progress on its own:
+Several things have to run on a cadence for a deployment to make progress on its own:
 `fire_due_timers` (deliver elapsed `ctx.sleep` timers), `fire_due_schedules` (start
-due cron runs), and `recover_stalled` (re-tick runs whose tick was lost to a crash).
-`Scanner` drives all three from one loop, on independent intervals — no APScheduler
-or periodiq dependency, just a blocking loop you run under whatever process manager
-you already have:
+due cron runs), `fire_due_activity_timeouts` and `fire_due_schedule_to_start_timeouts`
+(fail/retry activities past their deadlines), `fire_due_execution_timeouts` and
+`fire_due_run_timeouts` (fail overrunning workflows), and `recover_stalled` (re-tick
+runs whose tick was lost to a crash). `Scanner` drives them all from one loop, on
+independent intervals — no APScheduler or periodiq dependency, just a blocking loop you
+run under whatever process manager you already have:
 
 ```python
 from duratiq import Scanner
@@ -167,7 +186,9 @@ duratiq-scanner myapp.workers:make_engine --timer-interval 1 --schedule-interval
 ```
 
 Each scan has its own interval (timers want sub-second responsiveness; cron only
-changes per minute; recovery is a slower backstop), and a scan that raises is logged
+changes per minute; the timeout and recovery scans are slower backstops) — tune them
+with `--timer-interval`, `--schedule-interval`, `--activity-timeout-interval`,
+`--workflow-timeout-interval`, and `--recovery-interval`. A scan that raises is logged
 and retried next pass — one transient DB error never kills the loop. `run_once()` (or
 `--once`) runs each scan a single time, for driving the scanner from cron instead.
 
@@ -308,6 +329,59 @@ Unlike the awaiting calls, `side_effect` doesn't suspend — the value is availa
 immediately and recorded atomically with the rest of the tick. The result must be
 JSON-serialisable.
 
+## Deterministic time and run info
+
+`ctx.now()` is the determinism-safe `datetime.utcnow()` — it records the wall clock
+the first time the workflow reaches it and returns that same instant on every later
+replay, so a timestamp written into a result or compared against a deadline stays
+stable across re-ticks and crashes:
+
+```python
+@workflow(name="sla", registry=reg)
+def sla(ctx, order_id):
+    started = ctx.now()                      # fixed at first execution, stable forever
+    result = ctx.activity(process, order_id)
+    return {"order_id": order_id, "took_ms": (ctx.now() - started)}
+```
+
+It's a thin wrapper over `side_effect`, so like it the value is available immediately
+without suspending. `ctx.info()` returns a frozen `WorkflowInfo` snapshot of the
+current run's metadata — `run_id`, `name`, `version`, `parent_run_id`, `attempt`
+(the retry/reset counter), and `memo` — read from the run row already loaded for the
+tick, so there's no DB round-trip during replay:
+
+```python
+@workflow(name="report", registry=reg)
+def report(ctx):
+    info = ctx.info()
+    if info.attempt > 1:
+        ...                                  # behave differently on a retried run
+```
+
+## Local activities
+
+`ctx.local_activity(fn, *args)` runs a function **inline in the tick process** —
+no Dramatiq dispatch, no broker round-trip — and memoizes the result like a regular
+activity. It's the right tool for short, cheap work where a full message round-trip
+would dominate the latency (a quick lookup, a pure transform):
+
+```python
+@workflow(name="enrich", registry=reg)
+def enrich(ctx, order_id):
+    raw = ctx.activity(fetch_order, order_id)     # broker round-trip — the slow call
+    normalized = ctx.local_activity(normalize, raw)   # inline — no dispatch
+    return normalized
+```
+
+The function executes synchronously inside the tick transaction and is recorded as a
+`LOCAL_ACTIVITY` step, so on the re-tick it's already COMPLETED in history and the
+stored value is returned without re-running. Failures retry in-process up to
+`max_retries` (default `0`); once exhausted the step is FAILED and the workflow sees
+`ActivityFailed`, exactly like a dispatched activity. Because it runs in the tick
+process under the run lock, a local activity must be **fast and side-effect-light** —
+anything slow, blocking, or that needs the broker's at-least-once redelivery belongs
+in a regular `ctx.activity`.
+
 ## Parallel fan-out
 
 `ctx.gather` runs independent activities at once and waits for all of them. Build
@@ -354,6 +428,33 @@ cancelled** (cascading to its own children). That makes the decision **fixed acr
 replays**: a result that arrives after the race resolved can't flip the winner. Since a
 cancelled activity's message may still run on a worker, branches in a `select` must be
 safe to abandon.
+
+## Cancellation scopes
+
+`ctx.select` races branches you arm up front. A **cancellation scope** is the other
+shape: run a block normally, but let an out-of-band event — usually a signal —
+abandon whatever it's waiting on and fall through to cleanup. `ctx.set_signal_handler`
+registers a *background* handler (unlike `wait_signal`, it doesn't suspend — the
+workflow keeps going), and `ctx.cancellation_scope()` gives you a `with` block whose
+`cancel()` unwinds it at the next `ctx.*` suspension point:
+
+```python
+@workflow(name="watch", registry=reg)
+def watch(ctx, job_id):
+    with ctx.cancellation_scope() as scope:
+        ctx.set_signal_handler("abort", lambda _: scope.cancel())
+        ctx.activity(long_running_step, job_id)   # abandoned if "abort" arrives
+        ctx.sleep("PT1H")                          # ...or here
+    return "aborted or finished"                   # execution always continues here
+```
+
+When the `abort` signal is delivered the handler runs on that tick and calls
+`scope.cancel()`; the next awaiting `ctx.*` call inside the block raises an internal
+`_ScopeCancelled`, which the scope suppresses at `__exit__` so control resumes after
+the `with`. The decision is driven entirely by recorded history (signal delivery order
+is fixed), so it replays deterministically. Handlers are also useful on their own — a
+non-blocking `set_signal_handler` that just updates a flag or appends to a list lets a
+workflow react to signals without parking at a `wait_signal`.
 
 ## Continue-as-new
 
@@ -406,6 +507,31 @@ and starting the sub-run is recovered without spawning a duplicate. Cancelling a
 parent **cascades**: its still-running children (and theirs) are cancelled too;
 cancelling a child directly instead fails the parent's `child_workflow` so it
 doesn't wait forever.
+
+## Dynamic workflows and activities
+
+Normally every workflow and activity name is registered up front. A **dynamic
+handler** is a single catch-all that serves any name *not* explicitly registered —
+useful when names are data (a plugin system, a per-tenant workflow, a generic
+dispatcher):
+
+```python
+@workflow.dynamic(registry=reg)
+def any_workflow(ctx):
+    name = ctx.info().name        # the actual requested name
+    ...
+
+@activity.dynamic(registry=reg)
+def any_activity():
+    ...
+
+engine.start("whatever_name")     # routed to the dynamic workflow
+```
+
+Registry lookup tries the exact name first and only falls through to the dynamic
+handler when there's no match — so an explicit registration always shadows the
+catch-all. Without a dynamic handler registered, an unknown workflow still raises
+`WorkflowNotFound` and an unknown activity `KeyError`, exactly as before.
 
 ## Retries
 
@@ -473,6 +599,50 @@ deadline; on a timeout the progress survives onto the retried attempt, so
 `heartbeat_details()` lets it **resume instead of restarting**. It reuses the same
 activity-timeout scanner — a missed heartbeat is just a timed-out attempt. A beat after
 the step has finished is ignored (it can't revive a step the scanner already failed).
+
+## Schedule-to-start and schedule-to-close timeouts
+
+`start_to_close_ms` bounds a single attempt. Two further deadlines bound an activity's
+place in the queue and its total budget:
+
+```python
+@activity(name="dispatch", registry=reg, max_retries=5,
+          schedule_to_start_timeout_ms=30_000,    # must be picked up within 30s
+          schedule_to_close_timeout_ms=300_000)   # whole thing done within 5m
+def dispatch(order_id):
+    ...
+```
+
+`schedule_to_start_timeout_ms` is the **queue-wait** ceiling: if the activity is still
+SCHEDULED — never dequeued by a worker — past the deadline, the **schedule-to-start
+scanner** (`engine.fire_due_schedule_to_start_timeouts()`, run by `Scanner`) fails the
+step with a `ScheduleToStartTimeout`, no retry (a backed-up queue won't clear by
+retrying). `schedule_to_close_timeout_ms` is the **total budget** across every retry:
+once it's blown, the next timed-out attempt fails the step immediately rather than
+re-dispatching, regardless of the remaining retry count. Both deadlines are stored on
+the step when it's scheduled, so they survive replay and crashes.
+
+## Workflow-level timeouts
+
+Activity timeouts bound one step; **workflow timeouts** bound a whole run. Declare them
+on the workflow or at `start`:
+
+```python
+@workflow(name="pipeline", registry=reg, execution_timeout=3600, run_timeout=600)
+def pipeline(ctx):
+    ...
+
+engine.start("pipeline", execution_timeout=3600, run_timeout=600)   # seconds
+```
+
+`run_timeout` caps a **single run** and resets on `continue_as_new`; `execution_timeout`
+caps the **entire chain** and carries across every `continue_as_new` iteration — so a
+poll loop can give each iteration its own `run_timeout` while a single
+`execution_timeout` bounds the whole thing. Each is stored as a deadline on the run and
+enforced by a scanner — `engine.fire_due_execution_timeouts()` and
+`engine.fire_due_run_timeouts()`, both driven by `Scanner` — which fail an overrunning
+run with an `ExecutionTimeout` / `RunTimeout` error. As elsewhere, tests pass `now=...`
+to fast-forward.
 
 ## Idempotent activities
 
@@ -610,6 +780,36 @@ engine.count_runs(status="FAILED")                  # total behind the page
 `status` takes a single status or a list; `limit` is clamped to `[1, 1000]`. Pair
 `list_runs` with `count_runs` (same filters, no paging) to drive pagination.
 
+## Terminating, batch operations, and reset
+
+`engine.cancel(run_id)` ends a run gracefully — terminal status `CANCELLED`, cascading
+to its children. `engine.terminate(run_id, reason=...)` is the **hard** counterpart:
+terminal status `FAILED` with a `WorkflowTerminated` error, also cascading. Use cancel
+for an orderly stop, terminate to kill a run you consider broken:
+
+```python
+engine.cancel(run_id)                          # CANCELLED
+engine.terminate(run_id, reason="bad deploy")  # FAILED / WorkflowTerminated
+```
+
+Both have **batch** forms that apply to every run matching a filter (the same
+status / name / search-attribute filters as `list_runs`), returning the count
+affected — for an ops "stop everything matching this" action:
+
+```python
+engine.batch_cancel(name="checkout", search_attributes={"region": "eu"})
+engine.batch_terminate(status="SUSPENDED", reason="draining", limit=500)
+```
+
+`engine.reset_to_step(run_id, seq)` is the recovery tool: on a **FAILED** run it
+deletes every step after `seq` (and their timers), clears the error, and re-ticks from
+that checkpoint — so you can fix a bug and replay an in-flight run from before the
+break, rather than from scratch. (`retry` re-runs only the failed steps;
+`reset_to_step` rewinds to a chosen point.) `engine.update_with_start(...)` atomically
+starts a run and enqueues an update before the first tick can race it — the
+"ensure-running-then-mutate" primitive when you need the update applied on the very
+first tick.
+
 ## Search attributes
 
 Filtering by status and name only goes so far. **Search attributes** are typed,
@@ -633,6 +833,45 @@ value matches by type (`priority=1` ≠ `priority="1"`). Attributes are stored o
 indexed row per `(run, key)` in `workflow_search_attributes`, so filtering is a real
 indexed query, not a scan — and `upsert_search_attributes` replaces a key in place
 (re-applied idempotently on every replay).
+
+## Memo
+
+Search attributes are indexed and mutable. **Memo** is the opposite: immutable,
+unindexed metadata you attach once at `start` and read back from outside — a place to
+stash context that travels with the run but never needs filtering on (the originating
+request id, the user who kicked it off, a free-form note):
+
+```python
+engine.start("order", order_id="A1", memo={"requested_by": "ops@co", "ticket": "OPS-42"})
+
+engine.get_memo(run_id)        # -> {"requested_by": "ops@co", "ticket": "OPS-42"}
+```
+
+It's also visible inside the workflow as `ctx.info().memo`. Because it isn't indexed
+it costs nothing to attach and can't be filtered on — reach for search attributes when
+you need to query, memo when you just need to carry.
+
+## Workflow IDs and reuse policy
+
+Every run has an internal UUID. A **workflow ID** is a *business* identifier you choose
+— an order number, a customer id — with a policy governing what happens when you start
+another run with the same ID:
+
+```python
+engine.start("order", workflow_id="order-A1",
+             workflow_id_reuse_policy="REJECT_DUPLICATE")
+```
+
+- `ALLOW_DUPLICATE` (default) — always start a new run.
+- `REJECT_DUPLICATE` — raise if *any* run already exists for that ID.
+- `ALLOW_DUPLICATE_FAILED_ONLY` — start only if the most-recent run for that ID is
+  FAILED (raise otherwise), so a finished-or-running job isn't re-run.
+- `TERMINATE_IF_RUNNING` — terminate the most-recent non-terminal run, then start.
+
+`store.find_runs_by_workflow_id(workflow_id)` returns every run for an ID, newest
+first. Unlike `idempotency_key` (which dedupes a start into a single run), the
+workflow ID groups a *series* of runs under one business key and the policy decides
+whether a new one may join it.
 
 ## Payload codec
 
@@ -665,7 +904,9 @@ something JSON-serialisable. The default is a pass-through `IdentityCodec`, so
 nothing changes until you install one. It's process-global — set it once before
 starting the engine.
 
-## What's next (from the plan)
+## What's next
 
-Cross-process trace-context propagation (OpenTelemetry) builds on the listener hook
-above.
+The engine now covers the Temporal Python SDK's surface across engine operations,
+run metadata, and execution primitives. The remaining gap is reach, not features:
+the [`admin/`](admin/) UI exposes cancel / retry / send-signal but not yet
+`terminate` or memo display. See the [CHANGELOG](CHANGELOG.md) for the full surface.

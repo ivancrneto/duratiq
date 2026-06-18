@@ -85,6 +85,9 @@ def test_run_once_idle_returns_zeros(ns: SimpleNamespace) -> None:
         "timers": 0,
         "schedules": 0,
         "activity_timeouts": 0,
+        "schedule_to_start_timeouts": 0,
+        "execution_timeouts": 0,
+        "run_timeouts": 0,
         "recovery": 0,
     }
 
