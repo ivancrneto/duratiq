@@ -220,3 +220,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .serena/
+
+# Per-developer agent overrides
+AGENTS.local.md
