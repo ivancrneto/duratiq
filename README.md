@@ -356,10 +356,11 @@ JSON-serialisable.
 
 ## Deterministic time and run info
 
-`ctx.now()` is the determinism-safe `datetime.utcnow()` — it records the wall clock
-the first time the workflow reaches it and returns that same instant on every later
-replay, so a timestamp written into a result or compared against a deadline stays
-stable across re-ticks and crashes:
+`ctx.now()` is the determinism-safe `datetime.utcnow()` — it records the engine's
+clock (the real UTC clock, unless one was injected with `Engine(clock=...)`) the first
+time the workflow reaches it and returns that same instant on every later replay, so a
+timestamp written into a result or compared against a deadline stays stable across
+re-ticks and crashes:
 
 ```python
 @workflow(name="sla", registry=reg)

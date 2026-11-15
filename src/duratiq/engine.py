@@ -10,7 +10,7 @@ driving the run forward until it returns.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from . import events
@@ -66,6 +66,7 @@ class Engine:
         driver: Driver | None = None,
         *,
         listener: Listener | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -73,6 +74,15 @@ class Engine:
         # Optional observability hook; see duratiq.events. Best-effort — never lets a
         # listener exception affect execution.
         self.listener = listener
+        # Source of "now" for every deadline the engine computes (timer fire times,
+        # activity/workflow timeouts, ctx.now(), heartbeats) and the default for the
+        # scanners' ``now=``. ``None`` = the real UTC clock. Injecting a clock is what
+        # lets duratiq.testing skip time consistently; production code leaves it unset.
+        self.clock = clock
+
+    def now(self) -> datetime:
+        """The engine's current time (timezone-aware UTC): the injected clock, or the real one."""
+        return self.clock() if self.clock is not None else utcnow()
 
     def _emit(self, type: str, run_id: str, **fields: Any) -> None:
         if self.listener is None:
@@ -135,7 +145,7 @@ class Engine:
         # Workflow-level timeouts: per-call override takes priority over decorator default.
         exec_secs = execution_timeout if execution_timeout is not None else wf.execution_timeout
         run_secs = run_timeout if run_timeout is not None else wf.run_timeout
-        now = utcnow()
+        now = self.now()
         self.store.create_run(
             run_id=run_id,
             name=name,
@@ -274,7 +284,7 @@ class Engine:
         Nothing is scheduled, committed, or dispatched.
         """
         wf = self.registry.get_workflow(run.name)
-        ctx = WorkflowContext(run_id, self.store.get_steps(run_id), run=run)
+        ctx = WorkflowContext(run_id, self.store.get_steps(run_id), run=run, clock=self.now)
         try:
             wf.fn(ctx, **(run.input or {}))
         except (Suspend, ActivityFailed, ChildWorkflowFailed, ContinueAsNew, _ScopeCancelled):
@@ -348,7 +358,7 @@ class Engine:
             run_name = run.name
             wf = self.registry.get_workflow(run.name)
             steps = self.store.get_steps(run_id, session=session)
-            ctx = WorkflowContext(run_id, steps, run=run)
+            ctx = WorkflowContext(run_id, steps, run=run, clock=self.now)
 
             terminal_status: str | None = None
             terminal_result: Any = None
@@ -362,7 +372,7 @@ class Engine:
                 # Truncate history and reset the run to PENDING with the new input;
                 # execution_timeout_at persists across continuations; run_timeout_at is fresh.
                 run_secs = wf.run_timeout
-                run_timeout_at = utcnow() + timedelta(seconds=run_secs) if run_secs else None
+                run_timeout_at = self.now() + timedelta(seconds=run_secs) if run_secs else None
                 self.store.continue_as_new(run_id, new_input=can.input, session=session, run_timeout_at=run_timeout_at)
                 restart = True
             except (ActivityFailed, ChildWorkflowFailed) as exc:
@@ -381,7 +391,7 @@ class Engine:
             # Record any newly-scheduled activities inside the same transaction. An
             # activity with a start-to-close or heartbeat timeout carries a deadline, so
             # the timeout scanner can retry/fail it if it never reports back or beats.
-            _now = utcnow()
+            _now = self.now()
             for sa in ctx.scheduled:
                 ms = sa.heartbeat_timeout_ms or sa.start_to_close_ms
                 timeout_at = _now + timedelta(milliseconds=ms) if ms else None
@@ -425,7 +435,7 @@ class Engine:
                 self.store.create_timer(
                     run_id,
                     st.seq,
-                    fire_at=utcnow() + timedelta(seconds=st.delay_seconds),
+                    fire_at=_now + timedelta(seconds=st.delay_seconds),
                     session=session,
                 )
 
@@ -682,7 +692,7 @@ class Engine:
         Passing ``now`` lets tests fast-forward without sleeping. Returns the number
         of runs advanced.
         """
-        run_ids = self.store.fire_due_timers(now=now, limit=limit)
+        run_ids = self.store.fire_due_timers(now=now or self.now(), limit=limit)
         for run_id in run_ids:
             self.driver.request_tick(run_id)
         return len(run_ids)
@@ -697,7 +707,7 @@ class Engine:
         which is what keeps a hung or lost activity from wedging the run forever.
         Passing ``now`` lets tests fast-forward. Returns the number of activities
         timed out (retried or failed)."""
-        now = now or utcnow()
+        now = now or self.now()
         handled = 0
         for run_id, seq in self.store.find_due_activity_timeouts(now=now, limit=limit):
             if self._timeout_activity(run_id, seq, now):
@@ -786,7 +796,7 @@ class Engine:
         Once a schedule-to-start timeout fires, retries are no longer relevant — the
         activity is failed immediately and no re-dispatch happens.
         """
-        now = now or utcnow()
+        now = now or self.now()
         handled = 0
         for run_id, seq in self.store.find_due_schedule_to_start_timeouts(now=now, limit=limit):
             with self.store.locked_run(run_id) as session:
@@ -817,7 +827,7 @@ class Engine:
 
         Call periodically alongside ``fire_due_timers``. Returns the number of runs failed.
         """
-        now = now or utcnow()
+        now = now or self.now()
         run_ids = self.store.find_due_execution_timeouts(now=now, limit=limit)
         error = {"type": "ExecutionTimeout", "message": "workflow exceeded its execution timeout"}
         count = 0
@@ -842,7 +852,7 @@ class Engine:
 
         Call periodically alongside ``fire_due_timers``. Returns the number of runs failed.
         """
-        now = now or utcnow()
+        now = now or self.now()
         run_ids = self.store.find_due_run_timeouts(now=now, limit=limit)
         error = {"type": "RunTimeout", "message": "workflow exceeded its run timeout"}
         count = 0
@@ -889,7 +899,7 @@ class Engine:
         self.registry.get_workflow(name)  # validate the workflow exists
         spec = parse_cron(cron)  # validate the expression
         sid = schedule_id or uuid4().hex
-        next_fire_at = spec.next_after(now or utcnow())
+        next_fire_at = spec.next_after(now or self.now())
         self.store.create_schedule(
             id=sid, name=name, cron=cron, input=kwargs, next_fire_at=next_fire_at, overlap_policy=overlap_policy
         )
@@ -907,7 +917,7 @@ class Engine:
         Overlap policies: ``ALLOW`` always starts; ``SKIP`` skips if last run is still
         active; ``REPLACE`` cancels the last run first; ``TERMINATE`` terminates it first.
         """
-        now = now or utcnow()
+        now = now or self.now()
         claimed = self.store.claim_due_schedules(
             now=now, limit=limit, compute_next=lambda cron, n: parse_cron(cron).next_after(n)
         )
@@ -970,7 +980,7 @@ class Engine:
         an untimed activity legitimately running longer than the threshold may be
         dispatched again — give such activities a ``start_to_close_ms`` instead.
         """
-        cutoff = (now or utcnow()) - timedelta(seconds=older_than_seconds)
+        cutoff = (now or self.now()) - timedelta(seconds=older_than_seconds)
         run_ids = self.store.find_stalled_runs(older_than=cutoff, limit=limit)
         for run_id in run_ids:
             if redispatch_orphaned_activities:

@@ -8,6 +8,10 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ### Added
 
+- `Engine(..., clock=callable)` and `Engine.now()`: an injectable clock read by every
+  deadline the engine computes (timer fire times, activity and workflow timeouts,
+  heartbeat deadlines, `ctx.now()`, schedule registration) and by the scanners when
+  `now=` is omitted. Defaults to real UTC time, so existing code is unaffected.
 - `ctx.local_activity` accepts a registered `@activity` as well as a plain function;
   the step is named after the activity and `max_retries` defaults to the activity's.
 - Shorthand durations wherever a duration is accepted (`ctx.sleep`,

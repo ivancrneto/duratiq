@@ -45,17 +45,28 @@ class _ActivityScope:
     seq: int
     store: Any  # SqlStore — kept untyped to avoid an import cycle
     heartbeat_timeout_ms: int | None = None  # how far each heartbeat pushes the deadline
+    clock: Callable[[], datetime] | None = None  # the engine's clock; None = real UTC time
 
 
 @contextmanager
-def activity_scope(run_id: str, seq: int, store: Any, *, heartbeat_timeout_ms: int | None = None) -> Iterator[None]:
+def activity_scope(
+    run_id: str,
+    seq: int,
+    store: Any,
+    *,
+    heartbeat_timeout_ms: int | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> Iterator[None]:
     """Install the activity runtime context for the duration of one activity body.
 
     Drivers wrap each activity call in this so :func:`activity_info` / :func:`run_once`
     / :func:`heartbeat` work inside the body. ``heartbeat_timeout_ms`` is the activity's
-    heartbeat timeout, used to push the deadline out on each beat.
+    heartbeat timeout, used to push the deadline out on each beat; ``clock`` is the
+    engine's clock (pass ``engine.now``) so that deadline agrees with the scanner's.
     """
-    token = _current.set(_ActivityScope(run_id=run_id, seq=seq, store=store, heartbeat_timeout_ms=heartbeat_timeout_ms))
+    token = _current.set(
+        _ActivityScope(run_id=run_id, seq=seq, store=store, heartbeat_timeout_ms=heartbeat_timeout_ms, clock=clock)
+    )
     try:
         yield
     finally:
@@ -113,7 +124,8 @@ def heartbeat(details: Any = None) -> None:
     scope = _require_scope("heartbeat()")
     deadline: datetime | None = None
     if scope.heartbeat_timeout_ms:
-        deadline = datetime.now(timezone.utc) + timedelta(milliseconds=scope.heartbeat_timeout_ms)
+        now = scope.clock() if scope.clock is not None else datetime.now(timezone.utc)
+        deadline = now + timedelta(milliseconds=scope.heartbeat_timeout_ms)
     scope.store.record_heartbeat(scope.run_id, scope.seq, details=details, timeout_at=deadline)
 
 
