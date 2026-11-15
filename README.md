@@ -373,10 +373,13 @@ def enrich(ctx, order_id):
     return normalized
 ```
 
-The function executes synchronously inside the tick transaction and is recorded as a
-`LOCAL_ACTIVITY` step, so on the re-tick it's already COMPLETED in history and the
+`fn` is a plain function or a registered `@activity` (handy when the same activity
+runs remotely in one place and inline in another). It executes synchronously inside
+the tick transaction and is recorded as a `LOCAL_ACTIVITY` step named after the
+activity (or function), so on the re-tick it's already COMPLETED in history and the
 stored value is returned without re-running. Failures retry in-process up to
-`max_retries` (default `0`); once exhausted the step is FAILED and the workflow sees
+`max_retries` (default: the activity's own `max_retries`, or `0` for a plain
+function); once exhausted the step is FAILED and the workflow sees
 `ActivityFailed`, exactly like a dispatched activity. Because it runs in the tick
 process under the run lock, a local activity must be **fast and side-effect-light** —
 anything slow, blocking, or that needs the broker's at-least-once redelivery belongs

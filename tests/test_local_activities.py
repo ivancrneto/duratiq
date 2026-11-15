@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 from types import SimpleNamespace
 
-
-from duratiq import ActivityFailed, Engine, Registry, SqlStore
+from duratiq import ActivityFailed, Engine, Registry, SqlStore, activity
 from duratiq.decorators import workflow
 from duratiq.drivers.local import LocalDriver
 
@@ -207,3 +207,66 @@ def test_local_activity_after_regular_activity() -> None:
     run = ns.store.get_run(run_id)
     assert run.status == "COMPLETED"
     assert run.result["value"] == "local(from_broker)"
+
+
+# ------------------------------------------------------- registered @activity as local
+def test_registered_activity_runs_as_a_local_activity() -> None:
+    """Passing an ``@activity`` used to crash the tick (``Activity`` has no ``__name__``)."""
+    ns = _ns()
+    attempts: list[str] = []
+
+    @activity(name="normalize_address", registry=ns.reg, max_retries=2)
+    def normalize(raw: str) -> str:
+        attempts.append(raw)
+        if len(attempts) < 3:
+            raise ConnectionError("geocoder busy")
+        return raw.upper()
+
+    @workflow(name="wf_la_registered", registry=ns.reg)
+    def wf(ctx):
+        return ctx.local_activity(normalize, "main st")
+
+    run_id = ns.engine.start("wf_la_registered")
+    ns.driver.run_until_idle()
+
+    run = ns.store.get_run(run_id)
+    assert run.status == "COMPLETED", run.error
+    assert run.result["value"] == "MAIN ST"
+    assert len(attempts) == 3  # retries default to the activity's own max_retries=2
+    step = ns.store.get_steps(run_id)[0]
+    assert (step.kind, step.name, step.attempt) == ("LOCAL_ACTIVITY", "normalize_address", 2)
+
+
+def test_explicit_max_retries_overrides_the_activity_default() -> None:
+    ns = _ns()
+
+    @activity(name="always_fails", registry=ns.reg, max_retries=5)
+    def always_fails() -> None:
+        raise ValueError("nope")
+
+    @workflow(name="wf_la_override", registry=ns.reg)
+    def wf(ctx):
+        return ctx.local_activity(always_fails, max_retries=0)
+
+    run_id = ns.engine.start("wf_la_override")
+    ns.driver.run_until_idle()
+
+    run = ns.store.get_run(run_id)
+    assert run.status == "FAILED"
+    assert run.error["type"] == "ActivityFailed"
+    assert "activity 'always_fails' failed: nope" in run.error["message"]
+    assert ns.store.get_steps(run_id)[0].attempt == 0
+
+
+def test_callable_without_a_name_runs_as_a_local_activity() -> None:
+    ns = _ns()
+
+    @workflow(name="wf_la_partial", registry=ns.reg)
+    def wf(ctx):
+        return ctx.local_activity(functools.partial(_add, 40), 2)
+
+    run_id = ns.engine.start("wf_la_partial")
+    ns.driver.run_until_idle()
+
+    assert ns.store.get_run(run_id).result["value"] == 42
+    assert ns.store.get_steps(run_id)[0].name == "partial"

@@ -33,6 +33,14 @@ def duration_seconds(duration: float | str) -> float:
     return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
 
 
+def _local_activity_name(fn: Any) -> str:
+    """The step name for a local activity: an Activity's registered name, else the
+    callable's ``__name__`` (falling back to its type for e.g. ``functools.partial``)."""
+    if isinstance(fn, Activity):
+        return fn.name
+    return getattr(fn, "__name__", None) or type(fn).__name__
+
+
 def _workflow_name(workflow: "str | Workflow | Any") -> str:
     """Resolve a child-workflow reference to its registered name.
 
@@ -158,7 +166,8 @@ class ScheduledLocalActivity:
     """A local activity pending inline execution in the current tick."""
 
     seq: int
-    fn: Callable[..., Any]
+    fn: Callable[..., Any]  # what the workflow passed: a plain callable or an Activity
+    name: str  # recorded as the LOCAL_ACTIVITY step name
     args: list
     kwargs: dict
     max_retries: int
@@ -365,9 +374,9 @@ class WorkflowContext:
 
     def local_activity(
         self,
-        fn: Callable[..., Any],
+        fn: Activity | Callable[..., Any],
         *args: Any,
-        max_retries: int = 0,
+        max_retries: int | None = None,
         **kwargs: Any,
     ) -> Any:
         """Run a local activity synchronously inside the current tick.
@@ -376,11 +385,17 @@ class WorkflowContext:
         process without a Dramatiq dispatch. They are suitable for short-lived,
         CPU-bound work where broker round-trip latency would be excessive.
 
-        On first encounter the function is added to the pending local-activity list
-        (the engine runs it after the workflow code returns) and the result is recorded
-        as a ``LOCAL_ACTIVITY`` step. On replay the memoized result is returned
-        immediately, just like a regular activity.
+        ``fn`` is a plain callable or a registered ``@activity``. On first encounter it
+        is added to the pending local-activity list (the engine runs it after the
+        workflow code returns) and the result is recorded as a ``LOCAL_ACTIVITY`` step,
+        named after the activity (or the function). On replay the memoized result is
+        returned immediately, just like a regular activity.
+
+        Failures are retried inline up to ``max_retries`` times; it defaults to the
+        activity's own ``max_retries`` for an ``@activity`` and to ``0`` for a plain
+        callable.
         """
+        name = _local_activity_name(fn)
         seq = self._next_seq()
         step = self._history.get(seq)
 
@@ -388,15 +403,18 @@ class WorkflowContext:
             if step.status == "COMPLETED":
                 return (step.result or {}).get("value")
             if step.status == "FAILED":
-                raise ActivityFailed(fn.__name__, step.error)
+                raise ActivityFailed(name, step.error)
             # SCHEDULED — engine is about to execute it this tick; replay waits.
             raise Suspend()
 
+        if max_retries is None:
+            max_retries = fn.max_retries if isinstance(fn, Activity) else 0
         # Not in history: record the pending execution (the engine runs it post-replay).
         self.local_activities.append(
             ScheduledLocalActivity(
                 seq=seq,
                 fn=fn,
+                name=name,
                 args=list(args),
                 kwargs=dict(kwargs),
                 max_retries=max_retries,

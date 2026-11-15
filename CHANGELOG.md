@@ -6,8 +6,16 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.local_activity` accepts a registered `@activity` as well as a plain function;
+  the step is named after the activity and `max_retries` defaults to the activity's.
+
 ### Fixed
 
+- `ctx.local_activity(some_activity)` with an `@activity` object crashed the tick with
+  `AttributeError: 'Activity' object has no attribute '__name__'`, leaving the run
+  stuck; callables without `__name__` (e.g. `functools.partial`) failed the same way.
 - `.gitignore`'s Python-template `lib/` rule matched every nested `lib/` directory, so
   any new file under e.g. `admin/frontend/src/lib/` was silently ignored. The rule is
   now anchored to the project root.
