@@ -249,10 +249,11 @@ class WorkflowInfo:
 
 
 class WorkflowContext:
-    def __init__(self, run_id: str, steps: list, run: Any = None) -> None:
+    def __init__(self, run_id: str, steps: list, run: Any = None, clock: Callable[[], datetime] | None = None) -> None:
         self.run_id = run_id
         self._history = {step.seq: step for step in steps}
         self._run = run  # WorkflowRun row, supplied by the engine for ctx.info()
+        self._clock = clock  # the engine's clock, read once by ctx.now(); None = real UTC time
         self.scheduled: list[ScheduledActivity] = []
         self.scheduled_timers: list[ScheduledTimer] = []
         self.scheduled_waits: list[ScheduledWait] = []
@@ -635,15 +636,16 @@ class WorkflowContext:
     def now(self) -> datetime:
         """Return the deterministic current time for this run.
 
-        Calls :func:`~duratiq.models.utcnow` exactly once on first encounter and
-        stores the result as a side effect; every later replay returns the same frozen
-        timestamp. Use this instead of ``datetime.utcnow()`` or ``datetime.now()``
-        directly — those would produce a different value on each tick and break
-        determinism.
+        Reads the engine's clock (real UTC time unless one was injected, e.g. by
+        :mod:`duratiq.testing`) exactly once on first encounter and stores the result
+        as a side effect; every later replay returns the same frozen timestamp. Use
+        this instead of ``datetime.utcnow()`` or ``datetime.now()`` directly — those
+        would produce a different value on each tick and break determinism.
         """
         from .models import utcnow as _utcnow
 
-        iso = self.side_effect(lambda: _utcnow().isoformat())
+        clock = self._clock or _utcnow
+        iso = self.side_effect(lambda: clock().isoformat())
         return datetime.fromisoformat(iso)
 
     def info(self) -> WorkflowInfo:

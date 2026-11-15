@@ -54,7 +54,13 @@ class DramatiqDriver:
         retries = (message.options.get("retries") or 0) if message is not None else 0
         max_retries = (message.options.get("max_retries") or 0) if message is not None else 0
         try:
-            with activity_scope(run_id, seq, self.engine.store, heartbeat_timeout_ms=activity.heartbeat_timeout_ms):
+            with activity_scope(
+                run_id,
+                seq,
+                self.engine.store,
+                heartbeat_timeout_ms=activity.heartbeat_timeout_ms,
+                clock=self.engine.now,
+            ):
                 result = activity.fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - activity may raise anything
             if retries >= max_retries:
