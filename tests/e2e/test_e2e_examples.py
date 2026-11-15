@@ -29,6 +29,13 @@ def test_examples_are_discovered() -> None:
     assert len(EXAMPLES) >= 20, EXAMPLES
 
 
+def test_no_example_shadows_a_stdlib_module() -> None:
+    """Run as a script, an example puts examples/ first on sys.path; one named like a
+    stdlib module (e.g. the old examples/select.py) then breaks `import subprocess`."""
+    clashes = set(EXAMPLES) & sys.stdlib_module_names
+    assert not clashes, f"rename these examples: {sorted(clashes)}"
+
+
 @pytest.mark.parametrize("name", EXAMPLES)
 def test_example_runs(name: str) -> None:
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT / "src"), os.environ.get("PYTHONPATH")]))}
