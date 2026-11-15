@@ -71,7 +71,19 @@ cd duratiq
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 python -m examples.checkout
-pytest -q
+pytest -q                  # everything; add -m "not e2e" for the fast unit loop
+```
+
+The end-to-end suite in `tests/e2e/` runs real Dramatiq worker threads, the scanner
+loop (in-thread and as its own process), wall-clock timers, and every example. Its
+PostgreSQL variants — the only place the advisory lock is exercised — run when
+`DURATIQ_TEST_DATABASE_URL` points at a scratch database (it is wiped per test):
+
+```bash
+docker run -d --rm -p 55432:5432 -e POSTGRES_USER=duratiq -e POSTGRES_PASSWORD=duratiq \
+    -e POSTGRES_DB=duratiq_test postgres:16-alpine
+pip install -e ".[dev,postgres]"
+DURATIQ_TEST_DATABASE_URL=postgresql+psycopg://duratiq:duratiq@localhost:55432/duratiq_test pytest tests/e2e
 ```
 
 ## Drivers

@@ -36,6 +36,12 @@ All notable changes to **duratiq** are documented here. The format follows
 - `WorkflowEnvironment.mock_activity` also replaces local activities: an activity or
   name is mocked for both `ctx.activity` and `ctx.local_activity` calls, and a plain
   function passed to `ctx.local_activity` is mocked by passing the function itself.
+- An end-to-end test suite (`tests/e2e/`, marker `e2e`): real Dramatiq worker threads
+  with the scanner loop in wall-clock time (order saga, retries with backoff,
+  compensation, lost tick / lost activity recovery, a concurrency stress run), the
+  scanner CLI as a separate process (SIGTERM handling, `--once`), per-run lock
+  serialisation, every runnable example, and — with `DURATIQ_TEST_DATABASE_URL` —
+  all of it plus the Alembic migrations on PostgreSQL. CI runs the Postgres variant.
 
 ### Fixed
 
