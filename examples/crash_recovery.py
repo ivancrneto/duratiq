@@ -119,11 +119,17 @@ def main() -> None:
     open(sidefx, "w").close()
 
     env = {**os.environ, "DURATIQ_DEMO_SIDEFX": sidefx}
-    me = [sys.executable, __file__]
+    # Run the children as `-m examples.crash_recovery` from the repo root, never as a
+    # script: a script puts examples/ first on sys.path, where examples/select.py
+    # shadows the stdlib `select` module that `subprocess` imports (on Linux).
+    me = [sys.executable, "-m", "examples.crash_recovery"]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     print("=== phase 1: worker starts the run, then crashes mid-flight ===")
-    p1 = subprocess.run([*me, "crash", db_path], env=env, capture_output=True, text=True)
+    p1 = subprocess.run([*me, "crash", db_path], env=env, cwd=root, capture_output=True, text=True)
     print(p1.stdout, end="")
+    if "RUN_ID=" not in p1.stdout:
+        sys.exit(f"phase 1 never started the run (exit {p1.returncode}):\n{p1.stderr}")
     run_id = next(line.split("=", 1)[1] for line in p1.stdout.splitlines() if line.startswith("RUN_ID="))
     assert p1.returncode == 42, f"expected hard-exit 42, got {p1.returncode}"
     print(f"  (process exited with code {p1.returncode} — a real crash, not a clean return)\n")
@@ -139,7 +145,7 @@ def main() -> None:
     print()
 
     print("=== phase 2: a fresh, independent worker resumes the run ===")
-    p2 = subprocess.run([*me, "resume", db_path, run_id], env=env, capture_output=True, text=True)
+    p2 = subprocess.run([*me, "resume", db_path, run_id], env=env, cwd=root, capture_output=True, text=True)
     print(p2.stdout, end="")
     if p2.returncode != 0:
         print(p2.stderr, file=sys.stderr)
