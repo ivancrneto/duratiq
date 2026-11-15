@@ -24,8 +24,9 @@ actors, your broker, Postgres), with no separate orchestration cluster.
 > queries and updates; typed search attributes and immutable memo; workflow IDs with
 > reuse policies; `terminate`, batch cancel/terminate, and `reset_to_step`; a pluggable
 > payload codec; OpenTelemetry tracing and a lifecycle-event listener; Alembic
-> migrations; a packaged scanner runner; and a read/act admin UI (see [`admin/`](admin/)).
-> See the [CHANGELOG](CHANGELOG.md) for the full surface.
+> migrations; a packaged scanner runner; a time-skipping test harness
+> ([`duratiq.testing`](#testing-your-workflows)); and a read/act admin UI (see
+> [`admin/`](admin/)). See the [CHANGELOG](CHANGELOG.md) for the full surface.
 
 ## The idea
 
@@ -76,10 +77,77 @@ pytest -q
 ## Drivers
 
 - **`LocalDriver`** — synchronous, in-process, explicitly pumped. For dev,
-  examples, and tests (including simulating crashes).
+  examples, and tests (including simulating crashes). It's also the driver inside
+  [`WorkflowEnvironment`](#testing-your-workflows), the test harness.
 - **`DramatiqDriver`** — maps ticks and activity dispatches onto two Dramatiq
   actors. Single-process form here; see the module docstring for the multi-worker
   shape.
+
+## Testing your workflows
+
+`duratiq.testing.WorkflowEnvironment` is an in-memory engine (SQLite + `LocalDriver`)
+with a **virtual clock**. Every deadline the engine computes — `ctx.sleep` timers,
+activity and workflow timeouts, cron schedules, `ctx.now()` — reads that clock, so a
+workflow that waits a month is tested in milliseconds:
+
+```python
+from duratiq.testing import WorkflowEnvironment
+
+@workflow(name="trial", registry=reg)
+def trial(ctx, user_id):
+    ctx.sleep("30d")                   # or "P30D" (ISO-8601) — both work
+    return ctx.activity(send_reminder, user_id)
+
+def test_trial_reminds_after_30_days():
+    with WorkflowEnvironment(reg) as env:
+        assert env.execute("trial", user_id=7) == "reminded"
+```
+
+`execute` starts the run and drives it to completion, jumping the clock to the next
+pending deadline whenever the run is only waiting on time. If it's waiting on
+something time can't deliver — a signal, an update — it raises `RunBlocked` naming
+what's outstanding (`waiting on: signal 'approve' (seq 2)`) instead of hanging; a run
+that ends `FAILED`/`CANCELLED` raises `RunFailed` with the recorded error.
+
+For step-by-step control, `start` a run and `skip` precise amounts of time — any
+[duration](#durations) or a `timedelta`. `skip` stops at every deadline in between, in
+order, exactly as a running scanner would:
+
+```python
+run_id = env.start("trial", user_id=7)
+env.skip("29d")                        # or "P29D", seconds, or a timedelta
+assert env.status(run_id) == "SUSPENDED"
+env.skip("1d")
+assert env.result(run_id) == "reminded"
+```
+
+`env.signal`, `env.update` (returns the handler's result), `env.query`, `env.cancel`,
+and `env.terminate` each act and then drive the run until it blocks again;
+`env.history(run_id)` / `env.pending(run_id)` show its steps. Swap an activity's
+implementation for one test — the original's retry and timeout options are kept, and
+the registry you passed in is never modified. An activity (or its name) is replaced
+wherever the workflow runs it, `ctx.activity` or `ctx.local_activity`; a plain
+function used with `ctx.local_activity` is mocked by passing that function itself:
+
+```python
+env.mock_activity(send_reminder, Mock(return_value="reminded"))
+
+@env.mock_activity("charge_card")
+def declined(order_id):
+    raise RuntimeError("card declined")
+
+env.mock_activity(normalize, lambda raw: raw)   # normalize is used via ctx.local_activity
+```
+
+The environment starts at the real current time (frozen) unless you pass
+`start_time=`; pass `store=` to run against another database. Everything else is one
+attribute away: `env.engine`, `env.driver` (e.g. `env.driver.queue.clear()` to lose
+in-flight messages and test recovery), `env.store`. Outside the environment, the same
+clock hook is available as `Engine(..., clock=callable)`.
+
+[`examples/testing_workflows.py`](examples/testing_workflows.py) walks through all of
+this on a 30-day free-trial workflow: the one-liner, step-by-step skipping, mocking a
+regular and a local activity, `RunFailed`, and `RunBlocked`.
 
 ## Production note
 
@@ -123,14 +191,15 @@ def reminder(ctx, order_id):
 The deadline is computed once and stored, so it survives replay and crashes. A
 periodic **timer scanner** drives it — call `engine.fire_due_timers()` from cron
 or `periodiq`; it delivers every elapsed timer and re-ticks the runs they unblock.
-Tests pass `now=...` to fast-forward without sleeping.
+In tests, [`WorkflowEnvironment`](#testing-your-workflows) skips the time for you (or
+pass `now=...` to the scanner methods to fast-forward by hand).
 
 ### Durations
 
 Anywhere duratiq takes a duration — `ctx.sleep`, `ctx.wait_signal(timeout=...)`,
-and `ctx.defer_timer` — you can pass a number of seconds, an ISO-8601 duration, or
-the equivalent shorthand. Both string styles are fully supported; use whichever
-reads better:
+`ctx.defer_timer`, and `env.skip` in tests — you can pass a number of seconds, an
+ISO-8601 duration, or the equivalent shorthand. Both string styles are fully
+supported; use whichever reads better:
 
 | Duration    | Seconds   | ISO-8601     | Shorthand             |
 |-------------|-----------|--------------|-----------------------|
@@ -170,8 +239,10 @@ The cron parser supports the standard 5 fields (`* */n a-b a,b,c`, day-of-week
 day-of-week matches). Each due schedule is *claimed* — its next fire time advanced —
 before its run starts, so concurrent scanners don't double-fire and a missed tick is
 skipped rather than backfilled. Pass `schedule_id=` to make registration idempotent;
-`pause_schedule` / `resume_schedule` / `delete_schedule` manage the lifecycle. Tests
-pass `now=...` to fast-forward without waiting on the clock.
+`pause_schedule` / `resume_schedule` / `delete_schedule` manage the lifecycle. In
+tests, [`env.skip("P7D")`](#testing-your-workflows) fires a schedule at every due time
+in the skipped window (five runs for the weekday schedule above); the scanner methods
+also take `now=...` to fast-forward by hand.
 
 **Overlap policy.** When a schedule comes due while its previous run is still in
 flight, `create_schedule(..., overlap_policy=...)` decides what happens:
@@ -360,7 +431,8 @@ JSON-serialisable.
 clock (the real UTC clock, unless one was injected with `Engine(clock=...)`) the first
 time the workflow reaches it and returns that same instant on every later replay, so a
 timestamp written into a result or compared against a deadline stays stable across
-re-ticks and crashes:
+re-ticks and crashes. Under [`WorkflowEnvironment`](#testing-your-workflows) it reads
+the virtual clock, so it agrees with the time you skipped to:
 
 ```python
 @workflow(name="sla", registry=reg)
@@ -409,7 +481,9 @@ function); once exhausted the step is FAILED and the workflow sees
 `ActivityFailed`, exactly like a dispatched activity. Because it runs in the tick
 process under the run lock, a local activity must be **fast and side-effect-light** —
 anything slow, blocking, or that needs the broker's at-least-once redelivery belongs
-in a regular `ctx.activity`.
+in a regular `ctx.activity`. In tests, `env.mock_activity` replaces local activities
+too — pass the function itself, or the `@activity` / its name (see
+[Testing your workflows](#testing-your-workflows)).
 
 ## Parallel fan-out
 
@@ -670,8 +744,9 @@ poll loop can give each iteration its own `run_timeout` while a single
 `execution_timeout` bounds the whole thing. Each is stored as a deadline on the run and
 enforced by a scanner — `engine.fire_due_execution_timeouts()` and
 `engine.fire_due_run_timeouts()`, both driven by `Scanner` — which fail an overrunning
-run with an `ExecutionTimeout` / `RunTimeout` error. As elsewhere, tests pass `now=...`
-to fast-forward.
+run with an `ExecutionTimeout` / `RunTimeout` error. In tests,
+[`env.result(run_id)`](#testing-your-workflows) skips straight to the deadline and
+raises `RunFailed` with that error; the scanner methods also take `now=...`.
 
 ## Idempotent activities
 

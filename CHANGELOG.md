@@ -8,18 +8,34 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ### Added
 
+- `duratiq.testing.WorkflowEnvironment` — a time-skipping test harness: an in-memory
+  engine with a virtual clock. `execute(name, **kwargs)` runs a workflow to completion
+  in one line, jumping the clock over `ctx.sleep`s, timeouts, and signal-wait
+  timeouts; `skip(duration)` advances precisely, firing every deadline in between in
+  order (timers, activity/workflow timeouts, cron schedules). `signal` / `update` /
+  `query` / `cancel` / `terminate` helpers, `history` / `pending` inspection, and
+  `mock_activity` (keeps the original's retry/timeout options; never mutates the
+  caller's registry). Raises `RunFailed` for a failed/cancelled run and `RunBlocked`
+  — naming the outstanding signal/update/child — when a run cannot finish on its own.
 - `Engine(..., clock=callable)` and `Engine.now()`: an injectable clock read by every
   deadline the engine computes (timer fire times, activity and workflow timeouts,
   heartbeat deadlines, `ctx.now()`, schedule registration) and by the scanners when
   `now=` is omitted. Defaults to real UTC time, so existing code is unaffected.
+- `Registry.copy()` — an independent registry with the same workflows and activities.
+- `examples/testing_workflows.py` — a runnable tour of `duratiq.testing` on a 30-day
+  free-trial workflow.
+- Shorthand durations wherever a duration is accepted (`ctx.sleep`,
+  `wait_signal(timeout=...)`, `ctx.defer_timer`, `WorkflowEnvironment.skip`):
+  `"250ms"`, `"45s"`, `"10m"`, `"2h"`, `"30d"`, `"2w"`, and combinations
+  largest-unit-first such as `"1h30m"`. Units are lowercase only (so `"5M"` is never
+  misread as months). This is an addition, not a replacement: seconds and ISO-8601
+  (`"PT10M"`, `"P30D"`) keep working unchanged, and the test suite exercises every
+  duration entry point in both styles. The README has a side-by-side reference table.
 - `ctx.local_activity` accepts a registered `@activity` as well as a plain function;
   the step is named after the activity and `max_retries` defaults to the activity's.
-- Shorthand durations wherever a duration is accepted (`ctx.sleep`,
-  `wait_signal(timeout=...)`, `ctx.defer_timer`): `"250ms"`, `"45s"`, `"10m"`, `"2h"`,
-  `"30d"`, `"2w"`, and combinations largest-unit-first such as `"1h30m"`. Units are
-  lowercase only (so `"5M"` is never misread as months). This is an addition, not a
-  replacement: seconds and ISO-8601 (`"PT10M"`, `"P30D"`) keep working unchanged. The
-  README has a side-by-side reference table.
+- `WorkflowEnvironment.mock_activity` also replaces local activities: an activity or
+  name is mocked for both `ctx.activity` and `ctx.local_activity` calls, and a plain
+  function passed to `ctx.local_activity` is mocked by passing the function itself.
 
 ### Fixed
 

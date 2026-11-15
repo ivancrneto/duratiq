@@ -14,6 +14,9 @@ schedules, and idempotent activities (``activity_info`` / ``run_once``); activit
 timeouts and heartbeats; queries and updates; search attributes; a pluggable payload
 codec; OpenTelemetry tracing and a lifecycle listener; and a recovery scanner. See
 the project CHANGELOG for the full surface.
+
+For tests, :mod:`duratiq.testing` provides ``WorkflowEnvironment``: an in-memory engine
+on a virtual clock that skips over sleeps and timeouts, with activity mocking.
 """
 
 from __future__ import annotations

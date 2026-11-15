@@ -76,6 +76,20 @@ class Registry:
         self._dynamic_activity: Activity | None = None
         self._dynamic_workflow: Workflow | None = None
 
+    def copy(self) -> Registry:
+        """Return an independent registry holding the same workflows and activities.
+
+        Adding or replacing entries on the copy leaves this registry untouched — which
+        is how :class:`duratiq.testing.WorkflowEnvironment` mocks activities without
+        leaking the mock into other tests that share (say) ``default_registry``.
+        """
+        clone = Registry()
+        clone._activities = dict(self._activities)
+        clone._workflows = dict(self._workflows)
+        clone._dynamic_activity = self._dynamic_activity
+        clone._dynamic_workflow = self._dynamic_workflow
+        return clone
+
     def add_activity(self, activity: Activity) -> None:
         self._activities[activity.name] = activity
 

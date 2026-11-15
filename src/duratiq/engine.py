@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from . import events
-from .context import WorkflowContext
+from .context import ScheduledLocalActivity, WorkflowContext
 from .cron import parse_cron
 from .events import Listener, WorkflowEvent
 from .exceptions import (
@@ -570,9 +570,10 @@ class Engine:
                     )
                     attempt = 0
                     last_error: dict | None = None
+                    local_fn = self._local_activity_impl(sla)
                     while True:
                         try:
-                            local_result = sla.fn(*sla.args, **sla.kwargs)
+                            local_result = local_fn(*sla.args, **sla.kwargs)
                             self.store.complete_step(
                                 run_id,
                                 sla.seq,
@@ -635,6 +636,14 @@ class Engine:
         if outcome is not None:
             event_type, result_value, error = outcome
             self._emit(event_type, run_id, name=run_name, result=result_value, error=error)
+
+    def _local_activity_impl(self, sla: ScheduledLocalActivity) -> Callable[..., Any]:
+        """The callable a local activity runs: exactly what the workflow passed.
+
+        A seam for :mod:`duratiq.testing`, whose engine overrides it to substitute
+        ``WorkflowEnvironment.mock_activity`` replacements.
+        """
+        return sla.fn
 
     def report_activity_result(
         self, run_id: str, seq: int, result: Any, error: BaseException | None, *, attempt: int = 0
