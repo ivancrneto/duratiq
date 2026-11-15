@@ -103,13 +103,92 @@ def test_crash_mid_sleep_resumes_on_fresh_engine(ns: SimpleNamespace) -> None:
         ("PT1H", 3600.0),
         ("P1DT6H", 108_000.0),
         ("PT0.5S", 0.5),
+        ("P30D", 2_592_000.0),
+        ("PT1H30M", 5400.0),
+        ("PT1.5H", 5400.0),
+        ("P1DT12H", 129_600.0),
+        ("PT0S", 0.0),
+        # Developer shorthand.
+        ("45s", 45.0),
+        ("10m", 600.0),
+        ("2h", 7200.0),
+        ("30d", 2_592_000.0),
+        ("2w", 1_209_600.0),
+        ("250ms", 0.25),
+        ("1.5h", 5400.0),
+        ("1h30m", 5400.0),
+        ("1d12h", 129_600.0),
+        ("1m30s", 90.0),
+        ("1m5ms", 60.005),  # "m" then "ms", not "m" then "s"
+        ("0s", 0.0),
     ],
 )
 def test_duration_seconds(value: float | str, expected: float) -> None:
     assert duration_seconds(value) == expected
 
 
-@pytest.mark.parametrize("bad", ["", "P", "PT", "10m", "PXM", "1H"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "P",
+        "PT",
+        "PXM",
+        "10",  # a bare number string has no unit — pass a number for seconds
+        "1H",  # shorthand units are lowercase...
+        "5M",  # ...so "M" can never be misread as months
+        "10x",
+        "m",
+        "ms",
+        "1m1h",  # largest unit first
+        "1h1h",  # each unit at most once
+        "-5m",
+        "1 h",
+        "1h 30m",
+        " 30m",
+        "1.5.2h",
+        "10mm",
+    ],
+)
 def test_duration_seconds_rejects_garbage(bad: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid duration"):
         duration_seconds(bad)
+
+
+# Each ISO-8601 duration next to its shorthand spelling. Both styles are supported
+# side by side; these pairs pin that they mean exactly the same thing.
+EQUIVALENT_DURATIONS = [
+    ("PT45S", "45s"),
+    ("PT10M", "10m"),
+    ("PT2H", "2h"),
+    ("P30D", "30d"),
+    ("P14D", "2w"),
+    ("PT0.25S", "250ms"),
+    ("PT1.5H", "1.5h"),
+    ("PT1H30M", "1h30m"),
+    ("P1DT12H", "1d12h"),
+    ("PT1M30S", "1m30s"),
+]
+
+
+@pytest.mark.parametrize(("iso", "shorthand"), EQUIVALENT_DURATIONS)
+def test_iso_and_shorthand_are_equivalent(iso: str, shorthand: str) -> None:
+    assert duration_seconds(iso) == duration_seconds(shorthand)
+
+
+def test_readme_durations_table_matches_the_parser() -> None:
+    """The README's durations reference must stay true: every cell in a row is the same length."""
+    import pathlib
+    import re
+
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
+    start = readme.index("| Duration ")
+    rows = readme[start:].split("\n\n")[0].splitlines()[2:]  # skip header + separator
+    assert len(rows) >= 5
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        seconds = float(cells[1].strip("`"))
+        spellings = re.findall(r'"([^"]+)"', cells[2] + cells[3])
+        assert len(spellings) >= 2, row  # at least one ISO-8601 and one shorthand form
+        for spelling in spellings:
+            assert duration_seconds(spelling) == seconds, (row, spelling)

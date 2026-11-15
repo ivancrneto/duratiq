@@ -10,6 +10,12 @@ All notable changes to **duratiq** are documented here. The format follows
 
 - `ctx.local_activity` accepts a registered `@activity` as well as a plain function;
   the step is named after the activity and `max_retries` defaults to the activity's.
+- Shorthand durations wherever a duration is accepted (`ctx.sleep`,
+  `wait_signal(timeout=...)`, `ctx.defer_timer`): `"250ms"`, `"45s"`, `"10m"`, `"2h"`,
+  `"30d"`, `"2w"`, and combinations largest-unit-first such as `"1h30m"`. Units are
+  lowercase only (so `"5M"` is never misread as months). This is an addition, not a
+  replacement: seconds and ISO-8601 (`"PT10M"`, `"P30D"`) keep working unchanged. The
+  README has a side-by-side reference table.
 
 ### Fixed
 
