@@ -116,7 +116,7 @@ alembic -c alembic.ini revision --autogenerate -m "describe the change"
 ```python
 @workflow(name="reminder", registry=reg)
 def reminder(ctx, order_id):
-    ctx.sleep("PT10M")          # seconds (a number) or ISO-8601 ("PT10M", "P1DT6H")
+    ctx.sleep("PT10M")          # ISO-8601 — or the shorthand "10m", or 600 (seconds)
     return ctx.activity(send_followup, order_id)
 ```
 
@@ -124,6 +124,31 @@ The deadline is computed once and stored, so it survives replay and crashes. A
 periodic **timer scanner** drives it — call `engine.fire_due_timers()` from cron
 or `periodiq`; it delivers every elapsed timer and re-ticks the runs they unblock.
 Tests pass `now=...` to fast-forward without sleeping.
+
+### Durations
+
+Anywhere duratiq takes a duration — `ctx.sleep`, `ctx.wait_signal(timeout=...)`,
+and `ctx.defer_timer` — you can pass a number of seconds, an ISO-8601 duration, or
+the equivalent shorthand. Both string styles are fully supported; use whichever
+reads better:
+
+| Duration    | Seconds   | ISO-8601     | Shorthand             |
+|-------------|-----------|--------------|-----------------------|
+| 250 ms      | `0.25`    | `"PT0.25S"`  | `"250ms"`             |
+| 45 seconds  | `45`      | `"PT45S"`    | `"45s"`               |
+| 10 minutes  | `600`     | `"PT10M"`    | `"10m"`               |
+| 1½ hours    | `5400`    | `"PT1H30M"`  | `"1h30m"` or `"1.5h"` |
+| 1½ days     | `129600`  | `"P1DT12H"`  | `"1d12h"`             |
+| 2 weeks     | `1209600` | `"P14D"`     | `"2w"`                |
+| 30 days     | `2592000` | `"P30D"`     | `"30d"`               |
+
+ISO-8601 support covers days and time, `P[n]DT[n]H[n]M[n]S`. Years and months
+(`P1Y`, `P1M`) are not accepted because their length varies; for weeks write
+`"P7D"` or the shorthand `"1w"` (`"P1W"` isn't part of the supported subset).
+Shorthand units are `ms`, `s`, `m`, `h`, `d`, `w`, and they must be **lowercase**, so
+`"5M"` can never be mistaken for five months. A combination goes largest unit first,
+each unit at most once (`"1h30m"`, not `"30m1h"`). A bare string such as `"30"` is
+rejected because its unit is ambiguous; pass the number `30` for seconds.
 
 ## Recurring schedules
 
@@ -213,8 +238,8 @@ Signals are stored in `workflow_signals` independently of the waits that consume
 them, so one that arrives *before* its wait is queued and matched FIFO by name —
 no race. The consumed payload is memoized, so replay returns it without re-waiting.
 
-**Wait with a timeout.** `ctx.wait_signal(name, timeout=...)` (seconds, or an
-ISO-8601 string like `"PT24H"`) races the signal against a durable timer — the "wait
+**Wait with a timeout.** `ctx.wait_signal(name, timeout=...)` (any [duration](#durations) —
+`"PT24H"`, `"24h"`, `86400`) races the signal against a durable timer — the "wait
 for approval **or** give up after a day" pattern:
 
 ```python

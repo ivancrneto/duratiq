@@ -20,17 +20,34 @@ _ISO_DURATION = re.compile(
     r"^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
 )
 
+# Developer shorthand: one or more <number><unit> parts, largest unit first and each
+# at most once — "30m", "10d", "1h30m", "1.5h", "250ms". Units are lowercase only
+# (w d h m s ms), so "5M" can't be misread as months. Not a standard, just handy.
+_NUM = r"(\d+(?:\.\d+)?)"
+_SHORTHAND_DURATION = re.compile(rf"^(?:{_NUM}w)?(?:{_NUM}d)?(?:{_NUM}h)?(?:{_NUM}m)?(?:{_NUM}s)?(?:{_NUM}ms)?$")
+_SHORTHAND_UNITS = (604_800, 86_400, 3_600, 60, 1, 0.001)
+
 
 def duration_seconds(duration: float | str) -> float:
-    """Normalise a delay to seconds. Accepts a number (seconds) or an ISO-8601
-    duration string such as ``"PT10M"`` or ``"P1DT6H"``."""
+    """Normalise a delay to seconds.
+
+    Accepts a number (seconds), an ISO-8601 duration (``"PT10M"``, ``"P1DT6H"``), or a
+    shorthand string: ``"45s"``, ``"30m"``, ``"2h"``, ``"10d"``, ``"2w"``, ``"250ms"``,
+    or a combination largest-unit-first such as ``"1h30m"`` or ``"1d12h"``.
+    """
     if isinstance(duration, (int, float)):
         return float(duration)
-    match = _ISO_DURATION.match(duration)
-    if match is None or duration in ("P", "PT"):
-        raise ValueError(f"invalid duration {duration!r}: expected seconds or ISO-8601 (e.g. 'PT10M')")
-    days, hours, minutes, seconds = (float(part) if part else 0.0 for part in match.groups())
-    return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
+    iso = _ISO_DURATION.match(duration)
+    if iso is not None and duration not in ("P", "PT"):
+        days, hours, minutes, seconds = (float(part) if part else 0.0 for part in iso.groups())
+        return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
+    short = _SHORTHAND_DURATION.match(duration)
+    if short is not None and duration:
+        return sum(float(part) * unit for part, unit in zip(short.groups(), _SHORTHAND_UNITS) if part)
+    raise ValueError(
+        f"invalid duration {duration!r}: expected seconds, ISO-8601 (e.g. 'PT10M', 'P1DT6H'), "
+        "or shorthand (e.g. '30m', '10d', '1h30m')"
+    )
 
 
 def _local_activity_name(fn: Any) -> str:
@@ -423,8 +440,8 @@ class WorkflowContext:
         raise Suspend()
 
     def sleep(self, duration: float | str) -> None:
-        """Sleep durably for ``duration`` (seconds, or an ISO-8601 string like
-        ``"PT10M"``).
+        """Sleep durably for ``duration``: seconds, an ISO-8601 string like ``"PT10M"``,
+        or shorthand like ``"10m"`` / ``"30d"`` / ``"1h30m"``.
 
         On first encounter a timer is scheduled and the workflow suspends; the
         timer scanner re-ticks the run once the deadline elapses. On every later
@@ -458,7 +475,7 @@ class WorkflowContext:
         and matched FIFO, so there is no race. On replay the consumed payload is
         returned without re-waiting.
 
-        With ``timeout`` (seconds, or an ISO-8601 string like ``"PT24H"``) the wait
+        With ``timeout`` (seconds, ISO-8601 like ``"PT24H"``, or shorthand like ``"24h"``) the wait
         races a durable timer: if the signal arrives first its payload is returned; if
         the timer fires first :data:`TIMEOUT` is returned (a distinct sentinel, so a
         ``None`` payload is unambiguous — test with ``is TIMEOUT``). The losing side is
@@ -812,7 +829,10 @@ class WorkflowContext:
         raise Suspend()
 
     def defer_timer(self, duration: float | str) -> DeferredTimer:
-        """Build a timer branch for :meth:`select` (a deadline, not yet started)."""
+        """Build a timer branch for :meth:`select` (a deadline, not yet started).
+
+        ``duration`` takes the same forms as :meth:`sleep`: seconds, ISO-8601
+        (``"PT15M"``), or shorthand (``"15m"``)."""
         return DeferredTimer(duration=duration)
 
     def defer_signal(self, name: str) -> DeferredSignal:
