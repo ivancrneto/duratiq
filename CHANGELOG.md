@@ -6,6 +6,12 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `.gitignore`'s Python-template `lib/` rule matched every nested `lib/` directory, so
+  any new file under e.g. `admin/frontend/src/lib/` was silently ignored. The rule is
+  now anchored to the project root.
+
 ## [0.2.0] — 2026-06-17
 
 Temporal-parity additions across engine operations, run metadata, and execution
