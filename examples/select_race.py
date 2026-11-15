@@ -7,7 +7,7 @@ cancels the losers, so exactly one outcome wins.
 To show each winner deterministically we drive the engine by hand (a tiny driver that
 ticks but doesn't auto-run activities), then make one branch resolve per run.
 
-    cd duratiq && python -m examples.select
+    cd duratiq && python -m examples.select_race
 """
 
 from __future__ import annotations
