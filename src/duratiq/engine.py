@@ -553,7 +553,7 @@ class Engine:
                         run_id,
                         sla.seq,
                         kind="LOCAL_ACTIVITY",
-                        name=sla.fn.__name__,
+                        name=sla.name,
                         input={"args": sla.args, "kwargs": sla.kwargs},
                         status="SCHEDULED",
                         session=session,
