@@ -21,7 +21,9 @@ Trusted Publishing must be configured once before the first automated release.
 
 ## Cutting a release
 
-1. Make sure `main` is green (test / pre-commit / build / admin / coverage).
+1. Make sure `main` is green (test — including its `e2e-postgres` job — / pre-commit /
+   build / admin / coverage). To reproduce the end-to-end suite locally, see "Run the
+   example and the tests" in the [README](README.md).
 2. Bump `version` in [`pyproject.toml`](pyproject.toml) and move the
    [`CHANGELOG.md`](CHANGELOG.md) `[Unreleased]` entries under a new
    `## [X.Y.Z] — YYYY-MM-DD` heading (update the compare/link refs at the bottom).

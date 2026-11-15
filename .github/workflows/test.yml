@@ -32,3 +32,41 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+  # The end-to-end suite against a real PostgreSQL: the advisory-lock run
+  # serialisation, concurrent Dramatiq workers, and the Alembic migrations only
+  # exist (or only matter) there. Without DURATIQ_TEST_DATABASE_URL those tests skip.
+  e2e-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: duratiq
+          POSTGRES_PASSWORD: duratiq
+          POSTGRES_DB: duratiq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U duratiq -d duratiq_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DURATIQ_TEST_DATABASE_URL: postgresql+psycopg://duratiq:duratiq@localhost:5432/duratiq_test
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,postgres]"
+
+      - name: Run end-to-end tests on PostgreSQL
+        run: pytest tests/e2e -v -m e2e
