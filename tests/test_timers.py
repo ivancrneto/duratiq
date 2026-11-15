@@ -176,6 +176,30 @@ def test_iso_and_shorthand_are_equivalent(iso: str, shorthand: str) -> None:
     assert duration_seconds(iso) == duration_seconds(shorthand)
 
 
+@pytest.mark.parametrize(
+    ("sleep", "wait_timeout", "select_timer"),
+    [("P30D", "PT1H30M", "P14D"), ("30d", "1h30m", "2w")],
+    ids=["iso", "shorthand"],
+)
+def test_every_duration_entry_point_accepts_both_styles(sleep: str, wait_timeout: str, select_timer: str) -> None:
+    """ctx.sleep, wait_signal(timeout=...), and select's defer_timer all parse durations."""
+    from duratiq.testing import WorkflowEnvironment
+
+    reg = Registry()
+
+    @workflow(name="durations", registry=reg)
+    def durations(ctx) -> object:
+        ctx.sleep(sleep)
+        timed_out = ctx.wait_signal("nudge", timeout=wait_timeout)
+        index, _ = ctx.select(ctx.defer_signal("never"), ctx.defer_timer(select_timer))
+        return {"timed_out": repr(timed_out), "select_winner": index}
+
+    with WorkflowEnvironment(reg) as env:
+        start = env.now()
+        assert env.execute("durations") == {"timed_out": "duratiq.TIMEOUT", "select_winner": 1}
+        assert env.now() - start == timedelta(days=30, hours=1, minutes=30, weeks=2)
+
+
 def test_readme_durations_table_matches_the_parser() -> None:
     """The README's durations reference must stay true: every cell in a row is the same length."""
     import pathlib

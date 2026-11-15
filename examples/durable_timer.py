@@ -6,8 +6,10 @@ the wait: ``ctx.sleep`` records a deadline in the store and suspends the run, so
 *no worker is held* while it waits. A periodic scanner (here, ``fire_due_timers``)
 delivers the timer once its deadline elapses and re-ticks the run.
 
-To keep the demo instant we fast-forward time by passing ``now=`` to the scanner —
-exactly what the unit tests do — instead of sleeping for real ten minutes.
+To keep the demo instant we fast-forward time by passing ``now=`` to the scanner
+instead of sleeping for real ten minutes. That shows the scanner mechanics; to test
+your own workflows, ``duratiq.testing.WorkflowEnvironment`` does the fast-forwarding
+for you (see ``examples/testing_workflows.py``).
 
     cd duratiq && python -m examples.durable_timer
 """
