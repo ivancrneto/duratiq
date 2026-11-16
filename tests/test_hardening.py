@@ -1,6 +1,6 @@
 """Hardening: the correctness invariants that the whole engine rests on.
 
-Three properties from DURATIQ_MVP_PLAN.md §6/§9:
+Three properties from DURATIQ_PLAN.md §6/§9:
 
 * **Single-writer per run** (the plan's "#1 correctness requirement"): two ticks for
   the same run can be in flight at once (an activity-completion tick racing a

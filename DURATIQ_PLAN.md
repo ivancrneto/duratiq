@@ -1,4 +1,4 @@
-# Duratiq — Durable Workflows for Dramatiq (MVP Plan)
+# Duratiq — Durable Workflows for Dramatiq
 
 > "Temporal, but for Dramatiq." A durable-execution layer where **workflows are
 > deterministic orchestrator functions** and **activities are ordinary Dramatiq
@@ -25,8 +25,8 @@ Hatchet, Restate, Inngest. But none of them *are* a durable layer on top of
 **Build-vs-adopt honesty:** if you're willing to run separate infra, adopt
 Temporal or Hatchet. If you want durable execution *inside the stack you already
 run* (Dramatiq actors, RabbitMQ, Postgres, FastAPI/SQLAdmin) with no new daemon,
-this MVP is the gap-filler. For aizap specifically (already Dramatiq + Postgres +
-RabbitMQ), that's a strong fit.
+this MVP is the gap-filler. For a stack that already runs Dramatiq + Postgres +
+RabbitMQ, that's a strong fit.
 
 ---
 
@@ -222,6 +222,77 @@ activity via dedup table.
 2. **Replay-from-top (B) vs event-sourced (A)** — MVP assumes (B). (A) only if you
    need strict Temporal-grade history semantics.
 3. **Standalone library vs in-repo module** — package as `duratiq` for reuse
-   across aizap + aizap-motos, or start as an internal module and extract later.
+   across projects, or start as an internal module and extract later.
 4. **Scheduler dependency** — timer/recovery scanners need a periodic trigger
    (`periodiq`, APScheduler, or cron). Pick one.
+
+---
+
+## 11. Post-MVP roadmap (feature ideas)
+
+The engine's primitives are close to Temporal's, so most gaps are operational.
+Ordered by which one causes trouble first in production.
+
+**Proposed for 0.3.0 (items 1–3)**
+
+1. **History retention.** No code deletes finished runs, so runs, steps and
+   signals grow without limit. Add `purge_completed(older_than=...)` on the
+   store and call it from the scanner.
+2. **Non-retryable errors.** Add `non_retryable=(ValueError, ...)` on
+   `@activity` or a `NonRetryableError` exception, so that a permanent failure
+   does not use up the whole retry budget.
+3. **Wait for a result.** Add `Engine.result(run_id, timeout=...)`, so callers
+   do not each write a polling loop around `get()`.
+
+**Next**
+
+4. **Per-activity queues.** Add `queue=` on `@activity`. `DramatiqDriver` puts
+   ticks and all activities on `duratiq`. A separate queue gives slow or heavy
+   activities their own workers and is the simplest way to limit concurrency.
+5. ~~**Test helpers.**~~ Done: `duratiq.testing.WorkflowEnvironment`.
+6. **Schedule gaps.** Add cron timezone support (today cron is UTC only), a
+   catch-up policy for missed fires (today they are skipped), and a manual
+   "trigger now".
+7. **Admin UI.** Add a schedules page (list, pause, resume, delete) and
+   endpoints for query, update, `reset_to_step` and batch operations. Update
+   the README's "What's next" section, which still says terminate is missing.
+
+**Smaller or speculative**
+
+- `ctx.wait_condition(lambda: ...)`, to replace loops over `wait_signal`.
+- Signals from one workflow to another (today this needs an activity).
+- A saga/compensation example (an example, not an API).
+- A replay check against stored production histories in CI, to catch
+  `DeterminismError` before deploy.
+- Metrics (counters and histograms) in addition to OTel tracing.
+
+**Skip:** asyncio workflows and activities. Dramatiq is sync, so this would be
+a rewrite with little benefit.
+
+---
+
+## 12. CI/CD and checks
+
+Already in place: tests on Python 3.10–3.13, an e2e job against Postgres, the
+90% coverage gate, the build and twine check, pre-commit with ruff, admin CI,
+the OIDC release to PyPI, SHA-pinned actions and `cancel-in-progress`.
+
+**To add, in priority order**
+
+1. **Type checking.** Run ty or mypy in pre-commit and CI. The library ships
+   `py.typed`, but nothing checks the types.
+2. **Migration drift check.** Run `alembic upgrade head` and then
+   `alembic check` against SQLite and Postgres.
+3. **More ruff rules.** Set `select = ["E","F","I","B","UP","ASYNC","S"]`,
+   which covers imports, bugbear, pyupgrade, blocking calls in async code and
+   bandit's security checks. Today only the default E/F rules run.
+4. **`timeout-minutes` on every job.** No workflow sets one now.
+5. **Tidier Dependabot config.** Add `labels: [dependencies]` and a `chore`
+   commit-message prefix, and group the pip entries.
+6. Optional: `CODEOWNERS`, a PR template, a `@claude` workflow and a
+   conflict labeler. They add little on a solo library.
+
+**Fix:** `publish.yml` publishes when a GitHub Release is created, and
+`release.yml` publishes when a `v*` tag is pushed. If both run, PyPI rejects the
+second upload. `RELEASING.md` uses the tag flow, so remove `publish.yml` after
+checking which workflow the PyPI trusted publisher names.
