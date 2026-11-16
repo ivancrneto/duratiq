@@ -8,7 +8,7 @@ dependencies = [
     "duratiq",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "pydantic-settings>=2.4",
+    "pydantic-settings>=2.14.2",
     "psycopg[binary]>=3.1",
     "dramatiq>=1.16",
 ]
