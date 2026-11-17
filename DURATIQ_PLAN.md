@@ -296,3 +296,133 @@ the OIDC release to PyPI, SHA-pinned actions and `cancel-in-progress`.
 `release.yml` publishes when a `v*` tag is pushed. If both run, PyPI rejects the
 second upload. `RELEASING.md` uses the tag flow, so remove `publish.yml` after
 checking which workflow the PyPI trusted publisher names.
+
+---
+
+## 13. Adversarial review findings (2026-11-16)
+
+These findings come from an adversarial review of a code snapshot
+(`619f3d4d…_8_a_all_code.tar.gz`). That snapshot differs from `main` in
+about 40 files, so check that each finding still applies before fixing it.
+"Confirmed" means a repro passed on SQLite with `LocalDriver` or the Dramatiq
+StubBroker. Nothing was run against Postgres.
+
+**Fix first:** 1, 3, 4 and 6 make runs fail or hang permanently. A guard in
+`complete_step` would fix 1 and reduce 5 and 8: it should reject results for
+a step that is not SCHEDULED or whose attempt number does not match.
+
+**Critical: runs become incorrect or hang forever**
+
+1. [ ] **Late or redelivered activity results overwrite finished steps.**
+   `complete_step` skips only CANCELLED steps. So FAILED can flip to
+   COMPLETED (or back) after the workflow has moved on. After
+   continue-as-new, a stale result can also land on the new iteration's step
+   with the same seq. (`store.py` `complete_step`,
+   `engine.report_activity_result`) Confirmed.
+2. [ ] **Children are never restarted after continue-as-new, `retry` or
+   `reset_to_step`.** `_start_child` treats `(parent_run_id, parent_seq)` as
+   unique, so it re-ticks the old, finished child and the parent stays
+   SUSPENDED. (`engine._start_child`) Confirmed.
+3. [ ] **A cancellation scope stays active after its `with` block.**
+   `__exit__` never clears `_active_scope`, and the abandoned seq is never
+   skipped. The next `ctx.*` call then raises `DeterminismError`, or
+   `_ScopeCancelled`, which is a `BaseException` that `tick` does not catch.
+   The tick then rolls back and the broker retries forever. Pending
+   activities in the scope are not cancelled, despite the docstring.
+   (`context.py`) Confirmed.
+4. [ ] **Execution and run timeouts only set FAILED.** They do not call
+   `_notify_parent`, cascade to children or emit an event. The parent's
+   child step stays SCHEDULED forever and grandchildren keep running.
+   (`engine.py` timeout scanners) Confirmed.
+5. [ ] **The schedule-to-start timeout fails activities that are already
+   running.** Nothing clears `schedule_to_start_at` when a worker picks the
+   activity up. Confirmed.
+6. [ ] **An admin cancel or terminate of a child strands its parent.** The
+   admin cascades down to children but never notifies the parent. The
+   engine's `_notify_parent` needs only the store and `enqueue_tick`, which
+   the admin already has. (`admin/backend/app/actions.py`) Confirmed.
+7. [ ] **On SQLite, the admin's lock does not exclude workers.** On SQLite,
+   `locked_run` uses an in-process `threading.Lock`, which does not span
+   processes. A worker tick can commit COMPLETED over an admin cancel or
+   terminate. Confirmed.
+8. [ ] **Retries stack on Dramatiq.** Dramatiq retries the actor while the
+   timeout scanner re-dispatches it with a fresh budget, because
+   `timeout_at` is never reset. With `max_retries=2` the repro ran the
+   activity 9 times, and attempts kept running after the step was FAILED.
+   (`drivers/dramatiq.py`, `engine._timeout_activity`) Confirmed.
+9. [ ] **Exceptions that escape the actor's `except Exception` break runs.**
+   Examples: `TimeLimitExceeded` (a `BaseException`, default limit 10 min),
+   a DB error in `report_activity_result`, or a `get_activity` KeyError
+   during a deploy. They re-run the side effect, send the message to the
+   dead-letter queue and leave the run SUSPENDED forever. The only rescue is
+   `redispatch_orphaned_activities`, and neither the Scanner nor the CLI
+   exposes it. Confirmed.
+
+**High**
+
+10. [ ] `Suspend` subclasses `Exception`. A workflow's own
+    `try/except Exception` swallows it, so the run completes early and the
+    child step is orphaned. Confirmed.
+11. [ ] `retry()` deletes only FAILED steps. Steps from a compensation path
+    stay in history, so replay raises `DeterminismError`. Confirmed from
+    code.
+12. [ ] `reset_to_step` deletes the wait steps but leaves their signals and
+    updates consumed (`consumed_seq` still set). The replayed `wait_signal`
+    then hangs. Confirmed.
+13. [ ] `gather` and `select` drop the schedule-to-start and
+    schedule-to-close timeouts. Confirmed.
+14. [ ] `side_effect` returns the raw value on the first tick and the
+    JSON-decoded value on replay. Int keys become strings and tuples become
+    lists. Confirmed.
+15. [ ] `LocalDriver` re-runs the activity body when saving the result
+    fails, which diverges from `DramatiqDriver`. Confirmed.
+16. [ ] One failing schedule start (for example, a removed workflow) aborts
+    the rest of the claimed batch. Confirmed from code.
+17. [ ] Duplicate activity or workflow names silently keep only the last
+    registration. For example, `emails.send` and `sms.send` both register
+    as `send`. Confirmed from code.
+18. [ ] The admin commits to the database, then a broker failure returns
+    500. A client retry stores the signal twice. For a run retry, the next
+    attempt gets 409 and the run is stuck with no tick queued.
+    (`routes_runs.py`) Confirmed.
+
+**Security and deployment**
+
+19. [ ] Compose defaults `ADMIN_TOKEN=change-me-please`. It also publishes
+    the backend on `0.0.0.0:8080`, which bypasses nginx, and Postgres on
+    5432 with user and password `duratiq`/`duratiq`.
+20. [ ] An empty `ADMIN_TOKEN` disables auth, and nothing fails at startup.
+    Fail closed unless an explicit dev flag is set.
+21. [ ] The token check uses `!=`. Use `hmac.compare_digest`.
+22. [ ] Compose never sets `DURATIQ_BROKER_URL`, so Retry and Signal always
+    return 503 in the Docker stack.
+23. [ ] nginx sends no security headers (CSP, `X-Frame-Options`,
+    `X-Content-Type-Options`, `Referrer-Policy`). The token is kept in
+    `localStorage`, and the backend container runs as root.
+
+**Medium and low**
+
+24. [ ] Frontend sign-in and sign-out probably need a reload: the probe
+    query key does not include the token. Plausible, not run.
+25. [ ] Cron `5-7` and `1-7` are rejected because day-of-week 7 is mapped
+    to 0 by string replace. `*/2` in day-of-month wrongly triggers the
+    day-of-month/day-of-week OR rule. Confirmed.
+26. [ ] The recovery scan includes runs that are legitimately sleeping. With
+    about 10k such runs, a lost tick waits about 50 minutes for recovery.
+27. [ ] Signal `name` and `payload` have no length or size limits. An empty
+    name is accepted, and a name over 255 characters returns 500 on
+    Postgres.
+28. [ ] The admin terminate differs from the engine's: the error messages
+    differ and no `RUN_CANCELLED` or `RUN_TERMINATED` events fire.
+29. [ ] Races (plausible): `update()` checks the run status before taking
+    the lock, and the idempotency-key find-then-create in `start` and
+    `signal_with_start` can raise `IntegrityError`.
+30. [ ] Timer firing has no row lock, so two scanners can fire the same
+    timer. The extra ticks are harmless, but the docstring promises
+    exactly-once. Plausible.
+31. [ ] CI never runs the library tests on Postgres. `release.yml` does not
+    gate on the coverage or migration checks.
+
+Reviewed and clean: SQL injection (all params bound), the `limit` cap, auth
+on every `/api` route, XSS, N+1 queries, TypeScript and Pydantic schema
+parity, the migration chain and downgrades, and the wheel contents.
