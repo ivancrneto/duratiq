@@ -285,8 +285,13 @@ the OIDC release to PyPI, SHA-pinned actions and `cancel-in-progress`.
    `alembic check` against SQLite and Postgres.
 3. **More ruff rules.** Set `select = ["E","F","I","B","UP","ASYNC","S"]`,
    which covers imports, bugbear, pyupgrade, blocking calls in async code and
-   bandit's security checks. Today only the default E/F rules run.
-4. **`timeout-minutes` on every job.** No workflow sets one now.
+   bandit's security checks. Today only the default E/F rules run. Expect
+   cleanup first: under the snapshot's rule set `main` has hundreds of
+   errors (mostly ANN and T201; in `src/`, `zip()` without `strict=` at
+   `context.py:46, 873, 888`).
+4. **`timeout-minutes` on every job.** No workflow sets one now. The
+   `e2e-postgres` job also lacks a `merge_group` trigger and still pins the
+   older checkout/setup-python v6 SHAs.
 5. **Tidier Dependabot config.** Add `labels: [dependencies]` and a `chore`
    commit-message prefix, and group the pip entries.
 6. Optional: `CODEOWNERS`, a PR template, a `@claude` workflow and a
@@ -295,7 +300,13 @@ the OIDC release to PyPI, SHA-pinned actions and `cancel-in-progress`.
 **Fix:** `publish.yml` publishes when a GitHub Release is created, and
 `release.yml` publishes when a `v*` tag is pushed. If both run, PyPI rejects the
 second upload. `RELEASING.md` uses the tag flow, so remove `publish.yml` after
-checking which workflow the PyPI trusted publisher names.
+checking which workflow the PyPI trusted publisher names. `publish.yml` also
+uses its actions by mutable tag while holding `id-token: write`; every other
+workflow pins by SHA.
+
+The unmerged snapshot reviewed in §13 already implements items 1–5 and the
+`publish.yml` removal. Port those pieces onto `main` by hand; applying the
+snapshot over `main` would delete `main`'s newer features and tests.
 
 ---
 
@@ -303,7 +314,8 @@ checking which workflow the PyPI trusted publisher names.
 
 These findings come from an adversarial review of a code snapshot
 (`619f3d4d…_8_a_all_code.tar.gz`). That snapshot differs from `main` in
-about 40 files, so check that each finding still applies before fixing it.
+about 40 files, but the library logic is effectively unchanged. All 31
+findings were re-checked against `main` on 2026-11-17 and still apply.
 "Confirmed" means a repro passed on SQLite with `LocalDriver` or the Dramatiq
 StubBroker. Nothing was run against Postgres.
 
@@ -356,7 +368,8 @@ a step that is not SCHEDULED or whose attempt number does not match.
    during a deploy. They re-run the side effect, send the message to the
    dead-letter queue and leave the run SUSPENDED forever. The only rescue is
    `redispatch_orphaned_activities`, and neither the Scanner nor the CLI
-   exposes it. Confirmed.
+   exposes it: `Scanner` calls `recover_stalled` without it
+   (`scanner.py:93,123`). Confirmed.
 
 **High**
 
@@ -413,15 +426,35 @@ a step that is not SCHEDULED or whose attempt number does not match.
     name is accepted, and a name over 255 characters returns 500 on
     Postgres.
 28. [ ] The admin terminate differs from the engine's: the error messages
-    differ and no `RUN_CANCELLED` or `RUN_TERMINATED` events fire.
+    differ (the admin's is `None` when no reason is given,
+    `actions.py:70`) and no `RUN_CANCELLED` or `RUN_TERMINATED` events
+    fire.
 29. [ ] Races (plausible): `update()` checks the run status before taking
     the lock, and the idempotency-key find-then-create in `start` and
     `signal_with_start` can raise `IntegrityError`.
 30. [ ] Timer firing has no row lock, so two scanners can fire the same
     timer. The extra ticks are harmless, but the docstring promises
     exactly-once. Plausible.
-31. [ ] CI never runs the library tests on Postgres. `release.yml` does not
-    gate on the coverage or migration checks.
+31. [ ] CI runs only `tests/e2e` (including the migrations test) on
+    Postgres, not the full suite. `release.yml` runs `pytest -q` but gates on
+    neither coverage nor the Postgres/migration job.
+
+**Found comparing the snapshot with `main`**
+
+32. [ ] An engine without a driver fails with an opaque
+    `'NoneType' object has no attribute 'request_tick'`. The snapshot's
+    `_require_driver()` gives a clear error but checks only after
+    `create_run` commits, leaving an orphan PENDING run that a later call
+    with the same idempotency key returns. Check the driver before any
+    write (`start`, `signal_with_start`, `update`, `fire_due_timers`).
+    Confirmed.
+33. [ ] Registering a `functools.partial` without `name=` raises a bare
+    `AttributeError` (`registry.py`, `decorators.py`). Raise a `TypeError`
+    asking for an explicit name. Confirmed from code.
+34. [ ] Under `WorkflowEnvironment` the engine clock is virtual but store
+    timestamps (`updated_at`, `completed_at`) use wall time. After
+    `env.skip("30d")`, `recover_stalled_runs` sees every run as stalled.
+    Plausible, not run.
 
 Reviewed and clean: SQL injection (all params bound), the `limit` cap, auth
 on every `/api` route, XSS, N+1 queries, TypeScript and Pydantic schema
