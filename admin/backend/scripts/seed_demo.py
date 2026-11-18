@@ -32,14 +32,14 @@ def charge_card_flaky(order_id: str) -> str:
 
 
 @workflow(name="checkout", registry=reg)
-def checkout(ctx, order_id: str):  # noqa: ANN001
+def checkout(ctx, order_id: str):
     payment_id = ctx.activity(charge_card, order_id, 1999)
     ctx.activity(email_receipt, order_id, payment_id)
     return {"order_id": order_id, "payment_id": payment_id}
 
 
 @workflow(name="checkout_flaky", registry=reg)
-def checkout_flaky(ctx, order_id: str):  # noqa: ANN001
+def checkout_flaky(ctx, order_id: str):
     ctx.activity(charge_card_flaky, order_id)
     return {"order_id": order_id}
 

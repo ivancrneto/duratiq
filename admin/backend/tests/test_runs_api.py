@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from duratiq import SqlStore
+from duratiq.models import WorkflowRun, WorkflowStep
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
-
-from duratiq import SqlStore
-from duratiq.models import WorkflowRun, WorkflowStep
 
 from app.core.config import settings
 from app.db import get_store

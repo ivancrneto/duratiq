@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-
 from duratiq import CancellationScope, Engine, Registry, SqlStore
 from duratiq.decorators import activity, workflow
 from duratiq.drivers.local import LocalDriver

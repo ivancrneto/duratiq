@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from duratiq import Engine, Registry, SqlStore, WorkflowInfo, activity, workflow
+from duratiq import Engine, QueryNotFound, Registry, SqlStore, WorkflowInfo, activity, workflow
 from duratiq.drivers.local import LocalDriver
 
 
@@ -67,10 +67,8 @@ def test_ctx_now_is_deterministic_across_replays(ns):
     assert isinstance(t, datetime)
 
     # Force a second replay via engine.query (read-only)
-    try:
+    with pytest.raises(QueryNotFound):
         ns.engine.query(run_id, "missing")
-    except Exception:
-        pass
     # times would be appended again on the read-only replay
     if len(times) > 1:
         assert times[0] == times[1], "ctx.now() diverged across replays"

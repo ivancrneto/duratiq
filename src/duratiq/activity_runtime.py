@@ -20,14 +20,15 @@ them outside an activity raises ``RuntimeError``.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 # Set by the driver around an activity body; None outside any activity.
-_current: ContextVar["_ActivityScope | None"] = ContextVar("duratiq_activity_scope", default=None)
+_current: ContextVar[_ActivityScope | None] = ContextVar("duratiq_activity_scope", default=None)
 
 
 @dataclass(frozen=True)

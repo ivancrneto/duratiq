@@ -34,4 +34,5 @@ pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 120
+# Inherit the repo-wide lint rules; ruff otherwise stops at the nearest config file.
+extend = "../../pyproject.toml"

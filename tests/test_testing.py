@@ -594,7 +594,7 @@ def test_defaults_to_a_copy_of_the_default_registry() -> None:
 
 
 def test_naive_start_time_is_treated_as_utc(reg: Registry) -> None:
-    with WorkflowEnvironment(reg, start_time=datetime(2030, 1, 1)) as env:
+    with WorkflowEnvironment(reg, start_time=datetime(2030, 1, 1)) as env:  # noqa: DTZ001 - naive input under test
         assert env.now() == datetime(2030, 1, 1, tzinfo=timezone.utc)
 
 

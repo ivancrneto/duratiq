@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import timedelta
 from types import SimpleNamespace
 
-
 from duratiq import Engine, Registry, SqlStore
 from duratiq.decorators import activity, workflow
 from duratiq.drivers.local import LocalDriver

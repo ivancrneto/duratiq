@@ -9,8 +9,9 @@ driving the run forward until it returns.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from . import events
@@ -205,7 +206,7 @@ class Engine:
     def list_runs(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
         search_attributes: dict[str, Any] | None = None,
         limit: int = 50,
@@ -234,7 +235,7 @@ class Engine:
     def count_runs(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
         search_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -1126,7 +1127,7 @@ class Engine:
     def batch_cancel(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
         search_attributes: dict[str, Any] | None = None,
         limit: int = 10_000,
@@ -1145,7 +1146,7 @@ class Engine:
     def batch_terminate(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
         search_attributes: dict[str, Any] | None = None,
         reason: str | None = None,

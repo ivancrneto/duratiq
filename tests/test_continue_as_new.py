@@ -92,7 +92,7 @@ def test_unconsumed_signals_carry_over(ns: SimpleNamespace) -> None:
     @workflow(name="drain", registry=ns.reg)
     def drain(ctx, seen: list) -> list:
         item = ctx.wait_signal("item")
-        seen = seen + [item]
+        seen = [*seen, item]
         if item == "STOP":
             return seen
         ctx.continue_as_new(seen=seen)

@@ -53,9 +53,8 @@ def main() -> None:
     show("priority='1' (string, typed)", priority="1")  # int != str -> no match
 
     print(f"\n  count(priority=1) = {engine.count_runs(search_attributes={'priority': 1})}")
-    print(
-        f"  attributes of A1   = {engine.get_search_attributes(engine.list_runs(search_attributes={'region': 'eu', 'priority': 1})[0].id)}"
-    )
+    a1 = engine.list_runs(search_attributes={"region": "eu", "priority": 1})[0]
+    print(f"  attributes of A1   = {engine.get_search_attributes(a1.id)}")
 
 
 if __name__ == "__main__":

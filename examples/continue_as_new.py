@@ -31,7 +31,7 @@ def worker(ctx, done: list) -> dict:
         return {"processed": done}
     result = ctx.activity(process, item)
     # Restart fresh, carrying the tally — history does not accumulate across jobs.
-    ctx.continue_as_new(done=done + [result])
+    ctx.continue_as_new(done=[*done, result])
 
 
 def main() -> None:
