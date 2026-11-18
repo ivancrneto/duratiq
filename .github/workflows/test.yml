@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group: # run on merge-queue entries, so required checks report there too
 
 concurrency:
   group: test-${{ github.ref }}
@@ -12,6 +13,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +40,7 @@ jobs:
   # exist (or only matter) there. Without DURATIQ_TEST_DATABASE_URL those tests skip.
   e2e-postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
