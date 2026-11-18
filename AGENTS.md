@@ -68,6 +68,7 @@ pytest --cov=duratiq --cov-report=term-missing       # coverage gate (fail_under
 ruff check . && ruff format --check .                # lint + format (also via pre-commit)
 ty check                                             # type check src/duratiq (also via pre-commit)
 pre-commit run --all-files                           # full pre-commit gate
+python scripts/check_migrations.py history           # migration history: one head, unique IDs
 python -m build && python -m twine check dist/*      # sdist + wheel check (CI: build.yml)
 
 # admin backend (from admin/backend)

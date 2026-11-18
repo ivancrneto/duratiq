@@ -1,0 +1,77 @@
+name: migrations
+
+# Migration checks that the pytest suite doesn't cover, once per dialect:
+#   1. history: a single head, unique revision IDs, no dangling down_revision.
+#      Two PRs that each add a migration on the same parent fail here with the file
+#      names, instead of alembic's generic "multiple heads".
+#   2. stairway: walk down from head one revision at a time, then upgrade ->
+#      downgrade -> upgrade each revision, then `alembic check`. Catches a
+#      downgrade() that fails, leaves something behind, or drops what its upgrade
+#      doesn't recreate. See scripts/check_migrations.py.
+# Upgrade-to-head drift is already covered by tests/test_migrations.py (SQLite) and
+# tests/e2e/test_e2e_postgres_migrations.py (Postgres).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group: # run on merge-queue entries, so required checks report there too
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stairway:
+    name: stairway (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: sqlite
+            url: sqlite:///duratiq-stairway.db # throwaway, relative to the checkout
+          - database: postgres
+            url: postgresql+psycopg://duratiq:duratiq@localhost:5432/duratiq
+
+    # Services can't be conditional per matrix entry; the SQLite leg ignores it.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: duratiq
+          POSTGRES_PASSWORD: duratiq
+          POSTGRES_DB: duratiq
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U duratiq -d duratiq"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+
+    # migrations/env.py reads DURATIQ_DATABASE_URL, overriding alembic.ini's URL.
+    env:
+      DURATIQ_DATABASE_URL: ${{ matrix.url }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[migrations,postgres]"
+
+      - name: History — single head, unique revision IDs
+        run: python scripts/check_migrations.py history
+
+      - name: Stairway — step every migration down and up
+        run: python scripts/check_migrations.py stairway
