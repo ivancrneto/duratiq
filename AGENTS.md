@@ -67,6 +67,7 @@ pytest tests/test_cron.py                            # a single file
 pytest --cov=duratiq --cov-report=term-missing       # coverage gate (fail_under = 90)
 ruff check . && ruff format --check .                # lint + format (also via pre-commit)
 pre-commit run --all-files                           # full pre-commit gate
+python scripts/check_migrations.py history           # migration history: one head, unique IDs
 python -m build && python -m twine check dist/*      # sdist + wheel check (CI: build.yml)
 
 # admin backend (from admin/backend)
