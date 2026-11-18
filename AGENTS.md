@@ -26,7 +26,7 @@ If a task appears to require breaking one of these, stop and ask the human first
 - Do not create a worktree whose upstream tracks `main`; branch off it (`git worktree add ../wt-foo -b feat/foo origin/main`).
 - Changes land on `main` only through a reviewed pull request.
 - Force-pushing a feature branch is fine (prefer `--force-with-lease`).
-- Releases are cut by pushing a `v*` tag per [`RELEASING.md`](RELEASING.md) — only when the human asks.
+- Releases are cut by publishing a GitHub Release for a `v*` tag per [`RELEASING.md`](RELEASING.md) — only when the human asks.
 
 ### Never leave a process you started running
 
