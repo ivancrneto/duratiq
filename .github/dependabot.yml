@@ -1,5 +1,8 @@
 version: 2
 
+# One grouped PR per ecosystem/directory per week, committed as `chore(deps): …`
+# (or `chore(deps-dev): …` for dev-only dependencies).
+
 updates:
   # GitHub Actions — keep the SHA-pinned `uses:` current (Dependabot bumps the SHA
   # and the trailing version comment together).
@@ -7,6 +10,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       actions:
         patterns: ["*"]
@@ -16,18 +22,36 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    groups:
+      pip:
+        patterns: ["*"]
 
   # Python — the admin backend (separate pyproject).
   - package-ecosystem: pip
     directory: /admin/backend
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    groups:
+      pip:
+        patterns: ["*"]
 
   # JavaScript — the admin frontend (package-lock.json).
   - package-ecosystem: npm
     directory: /admin/frontend
     schedule:
       interval: weekly
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
     groups:
       npm:
         patterns: ["*"]
