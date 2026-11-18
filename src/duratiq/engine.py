@@ -84,6 +84,19 @@ class Engine:
         """The engine's current time (timezone-aware UTC): the injected clock, or the real one."""
         return self.clock() if self.clock is not None else utcnow()
 
+    def _require_driver(self) -> Driver:
+        """The attached driver; raises a clear error instead of ``'NoneType' has no attribute``.
+
+        Entry points call this before writing anything, so a missing driver never
+        leaves an orphan run or a consumed timer behind.
+        """
+        if self.driver is None:
+            raise RuntimeError(
+                "this Engine has no driver: pass driver=... to Engine(...) or attach one "
+                "(e.g. LocalDriver(engine) / DramatiqDriver(engine)) before starting or advancing runs"
+            )
+        return self.driver
+
     def _emit(self, type: str, run_id: str, **fields: Any) -> None:
         if self.listener is None:
             return
@@ -117,6 +130,7 @@ class Engine:
         * ``"REJECT_DUPLICATE"`` — raises ``ValueError`` if any run with this id exists.
         * ``"TERMINATE_IF_RUNNING"`` — terminates any non-terminal run with this id first.
         """
+        self._require_driver()
         wf = self.registry.get_workflow(name)  # validate name early
         if idempotency_key:
             existing = self.store.find_by_idempotency_key(idempotency_key)
@@ -178,6 +192,7 @@ class Engine:
         per-customer cart workflow that you signal on every add-to-cart, starting it
         on the first one.
         """
+        self._require_driver()
         wf = self.registry.get_workflow(name)  # validate name early
         if idempotency_key:
             existing = self.store.find_by_idempotency_key(idempotency_key)
@@ -306,6 +321,7 @@ class Engine:
         is asynchronous: with a broker the result lands once a worker processes it; read
         it back with :meth:`get_update_result`.
         """
+        self._require_driver()
         run = self.store.get_run(run_id)
         if run is None:
             raise WorkflowNotFound(f"run {run_id!r} not found")
@@ -701,6 +717,7 @@ class Engine:
         Passing ``now`` lets tests fast-forward without sleeping. Returns the number
         of runs advanced.
         """
+        self._require_driver()
         run_ids = self.store.fire_due_timers(now=now or self.now(), limit=limit)
         for run_id in run_ids:
             self.driver.request_tick(run_id)
@@ -716,6 +733,7 @@ class Engine:
         which is what keeps a hung or lost activity from wedging the run forever.
         Passing ``now`` lets tests fast-forward. Returns the number of activities
         timed out (retried or failed)."""
+        self._require_driver()
         now = now or self.now()
         handled = 0
         for run_id, seq in self.store.find_due_activity_timeouts(now=now, limit=limit):
@@ -805,6 +823,7 @@ class Engine:
         Once a schedule-to-start timeout fires, retries are no longer relevant — the
         activity is failed immediately and no re-dispatch happens.
         """
+        self._require_driver()
         now = now or self.now()
         handled = 0
         for run_id, seq in self.store.find_due_schedule_to_start_timeouts(now=now, limit=limit):
@@ -926,6 +945,7 @@ class Engine:
         Overlap policies: ``ALLOW`` always starts; ``SKIP`` skips if last run is still
         active; ``REPLACE`` cancels the last run first; ``TERMINATE`` terminates it first.
         """
+        self._require_driver()
         now = now or self.now()
         claimed = self.store.claim_due_schedules(
             now=now, limit=limit, compute_next=lambda cron, n: parse_cron(cron).next_after(n)
@@ -989,6 +1009,7 @@ class Engine:
         an untimed activity legitimately running longer than the threshold may be
         dispatched again — give such activities a ``start_to_close_ms`` instead.
         """
+        self._require_driver()
         cutoff = (now or self.now()) - timedelta(seconds=older_than_seconds)
         run_ids = self.store.find_stalled_runs(older_than=cutoff, limit=limit)
         for run_id in run_ids:
@@ -1016,6 +1037,7 @@ class Engine:
         ``wait_signal(name)`` will consume it FIFO. Returns ``False`` if the run is
         missing or already terminal.
         """
+        self._require_driver()
         with self.store.locked_run(run_id) as session:
             run = self.store.get_run(run_id, session=session)
             if run is None or run.status in _TERMINAL:
@@ -1194,6 +1216,7 @@ class Engine:
         for ``update_name`` via :meth:`WorkflowContext.set_update_handler`; the update
         is consumed at the first :meth:`WorkflowContext.wait_update` call.
         """
+        self._require_driver()
         wf = self.registry.get_workflow(name)
         run_id = uuid4().hex
         update_id = uuid4().hex

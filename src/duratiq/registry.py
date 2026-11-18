@@ -8,6 +8,14 @@ from typing import Any, Callable
 from .exceptions import WorkflowNotFound
 
 
+def callable_name(fn: Callable[..., Any]) -> str:
+    """``fn.__name__``, or a clear error for callables without one (e.g. ``functools.partial``)."""
+    name = getattr(fn, "__name__", None)
+    if not isinstance(name, str):
+        raise TypeError(f"cannot derive a name from {fn!r}: it has no __name__; pass name=... or use a named function")
+    return name
+
+
 @dataclass
 class Activity:
     """A unit of side-effecting work. In Duratiq an activity is dispatched as a

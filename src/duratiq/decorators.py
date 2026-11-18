@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .registry import Activity, Registry, Workflow
+from .registry import Activity, Registry, Workflow, callable_name
 
 default_registry = Registry()
 
@@ -31,7 +31,7 @@ def activity(
     def wrap(func: Callable[..., Any]) -> Activity:
         act = Activity(
             fn=func,
-            name=name or func.__name__,
+            name=name or callable_name(func),
             max_retries=max_retries,
             min_backoff_ms=min_backoff_ms,
             max_backoff_ms=max_backoff_ms,
@@ -60,7 +60,7 @@ def workflow(
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
         wf = Workflow(
             fn=func,
-            name=name or func.__name__,
+            name=name or callable_name(func),
             version=version,
             execution_timeout=execution_timeout,
             run_timeout=run_timeout,
