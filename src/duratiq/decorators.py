@@ -69,7 +69,7 @@ def workflow(
         reg.add_workflow(wf)
         # Stash the registration so ``ctx.child_workflow(func)`` can recover the
         # registered name even when it was customised via ``name=``.
-        func.__duratiq_workflow__ = wf  # type: ignore[attr-defined]
+        func.__duratiq_workflow__ = wf  # ty: ignore[missing-attribute]
         return func
 
     return wrap(fn) if fn is not None else wrap
@@ -101,5 +101,5 @@ def _dynamic_workflow(fn: Callable[..., Any] | None = None, *, registry: Registr
 
 # Expose .dynamic on the decorator functions as attributes so callers can write
 # @activity.dynamic and @workflow.dynamic without importing extra names.
-activity.dynamic = _dynamic_activity  # type: ignore[attr-defined]
-workflow.dynamic = _dynamic_workflow  # type: ignore[attr-defined]
+activity.dynamic = _dynamic_activity  # ty: ignore[missing-attribute]
+workflow.dynamic = _dynamic_workflow  # ty: ignore[missing-attribute]

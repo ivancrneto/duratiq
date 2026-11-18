@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, TypeVar
@@ -825,7 +825,7 @@ class SqlStore:
 
     # ------------------------------------------------------------------ lock
     @contextmanager
-    def locked_run(self, run_id: str) -> Iterator[Session]:
+    def locked_run(self, run_id: str) -> Generator[Session, None, None]:
         """Hold an exclusive lock on ``run_id`` for the duration of one tick.
 
         Yields a session whose transaction is committed on clean exit and rolled
