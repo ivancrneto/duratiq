@@ -8,9 +8,10 @@ history so completed work is skipped and only the frontier advances.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, NoReturn
+from typing import Any, NoReturn
 
 from .exceptions import ActivityFailed, ChildWorkflowFailed, ContinueAsNew, DeterminismError, Suspend, _ScopeCancelled
 from .registry import Activity, Workflow
@@ -43,7 +44,7 @@ def duration_seconds(duration: float | str) -> float:
         return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
     short = _SHORTHAND_DURATION.match(duration)
     if short is not None and duration:
-        return sum(float(part) * unit for part, unit in zip(short.groups(), _SHORTHAND_UNITS) if part)
+        return sum(float(part) * unit for part, unit in zip(short.groups(), _SHORTHAND_UNITS, strict=True) if part)
     raise ValueError(
         f"invalid duration {duration!r}: expected seconds, ISO-8601 (e.g. 'PT10M', 'P1DT6H'), "
         "or shorthand (e.g. '30m', '10d', '1h30m')"
@@ -58,7 +59,7 @@ def _local_activity_name(fn: Any) -> str:
     return getattr(fn, "__name__", None) or type(fn).__name__
 
 
-def _workflow_name(workflow: "str | Workflow | Any") -> str:
+def _workflow_name(workflow: str | Workflow | Any) -> str:
     """Resolve a child-workflow reference to its registered name.
 
     Accepts the name string, a :class:`Workflow`, or a function decorated with
@@ -174,7 +175,7 @@ class DeferredSignal:
 class DeferredChild:
     """A child-workflow branch for :meth:`WorkflowContext.select`, built by ``ctx.defer_child``."""
 
-    workflow: "str | Workflow | Any"
+    workflow: str | Workflow | Any
     kwargs: dict
 
 
@@ -228,7 +229,7 @@ class CancellationScope:
         """True after :meth:`cancel` has been called."""
         return self._cancelled
 
-    def __enter__(self) -> "CancellationScope":
+    def __enter__(self) -> CancellationScope:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
@@ -731,7 +732,7 @@ class WorkflowContext:
         """
         raise ContinueAsNew(dict(kwargs))
 
-    def child_workflow(self, workflow: "str | Workflow | Any", **kwargs: Any) -> Any:
+    def child_workflow(self, workflow: str | Workflow | Any, **kwargs: Any) -> Any:
         """Run another workflow as a child and return its result.
 
         On first encounter the child run is started and the parent suspends; when the
@@ -841,11 +842,11 @@ class WorkflowContext:
         """Build a signal branch for :meth:`select` (a wait, not yet started)."""
         return DeferredSignal(name=name)
 
-    def defer_child(self, workflow: "str | Workflow | Any", **kwargs: Any) -> DeferredChild:
+    def defer_child(self, workflow: str | Workflow | Any, **kwargs: Any) -> DeferredChild:
         """Build a child-workflow branch for :meth:`select` (a sub-run, not yet started)."""
         return DeferredChild(workflow=workflow, kwargs=dict(kwargs))
 
-    def select(self, *branches: "DeferredCall | DeferredTimer | DeferredSignal | DeferredChild") -> tuple[int, Any]:
+    def select(self, *branches: DeferredCall | DeferredTimer | DeferredSignal | DeferredChild) -> tuple[int, Any]:
         """Wait for the **first** of several branches to resolve, and return it.
 
         Branches are built with :meth:`defer` (an activity), :meth:`defer_timer` (a
@@ -870,7 +871,7 @@ class WorkflowContext:
             raise ValueError("select() needs at least one branch")
         seqs = [self._next_seq() for _ in branches]
         steps = [self._history.get(seq) for seq in seqs]
-        for i, (branch, step) in enumerate(zip(branches, steps)):
+        for i, (branch, step) in enumerate(zip(branches, steps, strict=True)):
             if step is not None:
                 self._check_branch_kind(branch, step, seqs[i], i)
 
@@ -885,7 +886,7 @@ class WorkflowContext:
             return winner, self._branch_value(branches[winner], steps[winner])
 
         if all(step is None for step in steps):
-            for branch, seq in zip(branches, seqs):
+            for branch, seq in zip(branches, seqs, strict=True):
                 self._schedule_branch(branch, seq)
         raise Suspend()
 
@@ -900,7 +901,7 @@ class WorkflowContext:
         }[type(branch)]
 
     @staticmethod
-    def _branch_name(branch: Any) -> "str | None":
+    def _branch_name(branch: Any) -> str | None:
         if isinstance(branch, DeferredCall):
             return branch.activity.name
         if isinstance(branch, DeferredSignal):
@@ -992,7 +993,7 @@ class WorkflowContext:
         # call match_signals against it.
         self.signal_handlers[name] = fn
 
-    def cancellation_scope(self) -> "CancellationScope":
+    def cancellation_scope(self) -> CancellationScope:
         """Return a new :class:`CancellationScope` context manager.
 
         Inside the ``with`` block, calling ``scope.cancel()`` (directly or from a signal

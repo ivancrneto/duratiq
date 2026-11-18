@@ -12,13 +12,13 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, TypeVar
 
 from sqlalchemy import Engine as SaEngine
-from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy import Select, create_engine, delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -34,6 +34,9 @@ from .models import (
     WorkflowUpdate,
     utcnow,
 )
+
+# A Select of any shape; ``.where()`` returns the same type, so filters preserve it.
+_SelectT = TypeVar("_SelectT", bound="Select[Any]")
 
 
 def _advisory_key(run_id: str) -> int:
@@ -63,8 +66,8 @@ class SqlStore:
         idempotency_key: str | None = None,
         parent_run_id: str | None = None,
         parent_seq: int | None = None,
-        execution_timeout_at: "datetime | None" = None,
-        run_timeout_at: "datetime | None" = None,
+        execution_timeout_at: datetime | None = None,
+        run_timeout_at: datetime | None = None,
         memo: dict | None = None,
         workflow_id: str | None = None,
     ) -> str:
@@ -145,7 +148,9 @@ class SqlStore:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))[:255]
 
     @classmethod
-    def _runs_filter(cls, query, status: Any, name: str | None, search_attributes: "dict | None" = None):
+    def _runs_filter(
+        cls, query: _SelectT, status: Any, name: str | None, search_attributes: dict | None = None
+    ) -> _SelectT:
         if status is not None:
             statuses = [status] if isinstance(status, str) else list(status)
             query = query.where(WorkflowRun.status.in_(statuses))
@@ -164,9 +169,9 @@ class SqlStore:
     def list_runs(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
-        search_attributes: "dict | None" = None,
+        search_attributes: dict | None = None,
         limit: int = 50,
         offset: int = 0,
         newest_first: bool = True,
@@ -187,9 +192,9 @@ class SqlStore:
     def count_runs(
         self,
         *,
-        status: "str | list[str] | None" = None,
+        status: str | list[str] | None = None,
         name: str | None = None,
-        search_attributes: "dict | None" = None,
+        search_attributes: dict | None = None,
     ) -> int:
         """Count runs matching the same filters as :meth:`list_runs` (ignores paging)."""
         from sqlalchemy import func
@@ -247,7 +252,7 @@ class SqlStore:
         *,
         new_input: dict,
         session: Session,
-        run_timeout_at: "datetime | None" = None,
+        run_timeout_at: datetime | None = None,
     ) -> None:
         """Truncate a run's history and restart it with fresh input (same run id).
 
@@ -697,7 +702,8 @@ class SqlStore:
             )
         )
         matched = 0
-        for wait, update in zip(waits, updates):
+        # Pair as many as possible: extra waits keep waiting, extra updates stay queued.
+        for wait, update in zip(waits, updates, strict=False):
             update.consumed_seq = wait.seq
             wait.status = "COMPLETED"
             wait.result = {"value": {"id": update.id, "name": update.name, **(update.args or {})}}

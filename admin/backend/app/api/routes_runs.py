@@ -6,10 +6,9 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from duratiq import SqlStore
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-
-from duratiq import SqlStore
 
 from .. import actions, repository
 from ..db import get_store

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-
 from duratiq import Engine, Registry, SqlStore, WorkflowEvent, activity, workflow
 from duratiq.drivers.local import LocalDriver
 

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from typing import Any, TypeVar
 
 from duratiq import SqlStore
 from duratiq.models import WorkflowRun, WorkflowSearchAttribute, WorkflowStep
+from sqlalchemy import Select, func, select
+from sqlalchemy.orm import Session
+
+_SelectT = TypeVar("_SelectT", bound="Select[Any]")
 
 
-def _apply_search_attributes(query, search_attributes: dict[str, Any] | None):
+def _apply_search_attributes(query: _SelectT, search_attributes: dict[str, Any] | None) -> _SelectT:
     """AND an equality filter per requested search attribute (a run must carry all)."""
     for key, value in (search_attributes or {}).items():
         matching = select(WorkflowSearchAttribute.run_id).where(
@@ -58,4 +59,4 @@ def list_steps(session: Session, run_id: str) -> list[WorkflowStep]:
 
 def status_counts(session: Session) -> dict[str, int]:
     rows = session.execute(select(WorkflowRun.status, func.count()).group_by(WorkflowRun.status)).all()
-    return {status: count for status, count in rows}
+    return dict(rows)

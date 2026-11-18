@@ -31,8 +31,9 @@ import logging
 import signal
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .engine import Engine
@@ -159,7 +160,7 @@ class Scanner:
     def _run_scan(self, name: str, fn: Callable[[], int]) -> None:
         try:
             advanced = fn()
-        except Exception:  # noqa: BLE001 - a transient scan error must not kill the loop
+        except Exception:  # a transient scan error must not kill the loop
             log.exception("duratiq scan %s failed", name)
             return
         if advanced:

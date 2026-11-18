@@ -62,7 +62,7 @@ class DramatiqDriver:
                 clock=self.engine.now,
             ):
                 result = activity.fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - activity may raise anything
+        except Exception as exc:
             if retries >= max_retries:
                 # Budget exhausted: record FAILED and return normally so Dramatiq
                 # acks the message instead of dead-lettering it.

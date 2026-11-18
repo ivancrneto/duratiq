@@ -21,7 +21,7 @@ def _build():
         return "recovered"
 
     @workflow(name="wf", registry=reg)
-    def wf(ctx):  # noqa: ANN001
+    def wf(ctx):
         a = ctx.activity(double, 21)
         b = ctx.activity(boom)
         return {"a": a, "b": b}

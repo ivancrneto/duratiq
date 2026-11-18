@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-class Suspend(Exception):  # noqa: N818 - control-flow signal, not an "Error"
+class Suspend(Exception):
     """Raised inside a workflow when it reaches an async point that is not ready.
 
     This is *not* a failure. It unwinds the orchestrator stack so the worker can
@@ -12,7 +12,7 @@ class Suspend(Exception):  # noqa: N818 - control-flow signal, not an "Error"
     """
 
 
-class ContinueAsNew(Exception):  # noqa: N818 - control-flow signal, not an "Error"
+class ContinueAsNew(Exception):
     """Raised by ``ctx.continue_as_new`` to restart the workflow with fresh history.
 
     Like :class:`Suspend` this is *not* a failure — it unwinds the orchestrator so the
@@ -54,7 +54,7 @@ class WorkflowNotFound(Exception):
     """Raised when a run references a workflow name absent from the registry."""
 
 
-class QueryNotFound(Exception):  # noqa: N818 - a lookup miss, not a runtime failure
+class QueryNotFound(Exception):
     """Raised by ``engine.query`` when the workflow registered no handler by that name.
 
     ``available`` lists the handlers the run *did* register, to make a typo obvious.
@@ -83,7 +83,7 @@ class DeterminismError(Exception):
     """Raised when replay diverges from recorded history (e.g. step kind/name mismatch)."""
 
 
-class _ScopeCancelled(BaseException):  # noqa: N818 - internal control-flow, not a user exception
+class _ScopeCancelled(BaseException):
     """Raised internally when a CancellationScope is cancelled. Never surfaces to user code."""
 
 

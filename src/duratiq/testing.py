@@ -82,7 +82,7 @@ class RunFailed(Exception):
         super().__init__(f"run {run_id} ended {status}: {detail}")
 
 
-class RunBlocked(Exception):  # noqa: N818 - a state report, like QueryNotFound
+class RunBlocked(Exception):
     """Raised by :meth:`WorkflowEnvironment.result` when a run cannot finish on its own.
 
     The run is waiting on something that time alone will not deliver — a signal, an

@@ -7,7 +7,6 @@ effect is not repeated, but the activity still completes with the recorded value
 
 from __future__ import annotations
 
-
 import pytest
 
 from duratiq import Engine, Registry, SqlStore, activity, activity_info, run_once, workflow

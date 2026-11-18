@@ -30,7 +30,7 @@ class CollectingDriver:
     def request_tick(self, run_id: str) -> None:
         self.ticks.append(run_id)
 
-    def dispatch_activity(self, run_id, seq, name, args, kwargs, max_retries) -> None:  # noqa: ANN001
+    def dispatch_activity(self, run_id, seq, name, args, kwargs, max_retries) -> None:
         self.dispatches.append((run_id, seq, name, args, kwargs, max_retries))
 
     def run_ticks(self) -> None:
