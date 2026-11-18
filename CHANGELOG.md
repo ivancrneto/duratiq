@@ -43,6 +43,17 @@ All notable changes to **duratiq** are documented here. The format follows
   serialisation, every runnable example, and — with `DURATIQ_TEST_DATABASE_URL` —
   all of it plus the Alembic migrations on PostgreSQL. CI runs the Postgres variant.
 
+### Changed
+
+- An `Engine` with no driver attached now raises a `RuntimeError` saying how to attach
+  one, instead of `AttributeError: 'NoneType' object has no attribute 'request_tick'`.
+  It raises before writing anything: `start`, `signal_with_start`, `signal`, `update`,
+  `update_with_start` and the scanner methods used to fail after committing, leaving
+  an orphan PENDING run or a fired timer that never re-ticked its run.
+- `@activity` / `@workflow` on a callable with no `__name__` (e.g. a
+  `functools.partial`) without `name=` now raises a `TypeError` saying so, instead of
+  a bare `AttributeError`.
+
 ### Fixed
 
 - `ctx.local_activity(some_activity)` with an `@activity` object crashed the tick with
