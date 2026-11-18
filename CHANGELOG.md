@@ -56,6 +56,11 @@ All notable changes to **duratiq** are documented here. The format follows
 
 ### Fixed
 
+- A late or redelivered activity result no longer overwrites a step that already
+  finished. Before, an activity that reported after its timeout had failed the step
+  could flip it to COMPLETED, and a redelivered failure could flip a COMPLETED step
+  to FAILED. Results are now accepted only while the step is SCHEDULED; a rejected
+  result emits no event and queues no tick.
 - `ctx.local_activity(some_activity)` with an `@activity` object crashed the tick with
   `AttributeError: 'Activity' object has no attribute '__name__'`, leaving the run
   stuck; callables without `__name__` (e.g. `functools.partial`) failed the same way.
