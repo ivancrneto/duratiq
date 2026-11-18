@@ -277,7 +277,10 @@ Already in place: tests on Python 3.10–3.13, an e2e job against Postgres, the
 90% coverage gate, the build and twine check, pre-commit with ruff, admin CI,
 the OIDC release to PyPI, SHA-pinned actions and `cancel-in-progress`.
 
-**To add, in priority order**
+**Done.** Items 1–5 and the `publish.yml` fix landed in #77, #78, #79, #81, #82
+and #83. `publish.yml` is now the single PyPI publisher.
+
+**Original list, in priority order**
 
 1. **Type checking.** Run ty or mypy in pre-commit and CI. The library ships
    `py.typed`, but nothing checks the types.
@@ -320,8 +323,9 @@ findings were re-checked against `main` on 2026-11-17 and still apply.
 StubBroker. Nothing was run against Postgres.
 
 **Fix first:** 1, 3, 4 and 6 make runs fail or hang permanently. A guard in
-`complete_step` would fix 1 and reduce 5 and 8: it should reject results for
-a step that is not SCHEDULED or whose attempt number does not match.
+`complete_step` (now partly in place, see 1) would fix 1 and reduce 5 and 8:
+it should reject results for a step that is not SCHEDULED or that came from
+a superseded dispatch.
 
 **Critical: runs become incorrect or hang forever**
 
@@ -331,6 +335,12 @@ a step that is not SCHEDULED or whose attempt number does not match.
    continue-as-new, a stale result can also land on the new iteration's step
    with the same seq. (`store.py` `complete_step`,
    `engine.report_activity_result`) Confirmed.
+   **Partly fixed:** `complete_step` now accepts a result only while the step
+   is SCHEDULED, so a finished step can't flip. Still open: the
+   continue-as-new case, and a late result from an earlier attempt still
+   resolves a retrying step. Both need a per-dispatch token, because the
+   Dramatiq retry count and `step.attempt` don't agree on the attempt
+   number.
 2. [ ] **Children are never restarted after continue-as-new, `retry` or
    `reset_to_step`.** `_start_child` treats `(parent_run_id, parent_seq)` as
    unique, so it re-ticks the old, finished child and the parent stays
@@ -441,7 +451,7 @@ a step that is not SCHEDULED or whose attempt number does not match.
 
 **Found comparing the snapshot with `main`**
 
-32. [ ] An engine without a driver fails with an opaque
+32. [x] (Fixed in #80.) An engine without a driver fails with an opaque
     `'NoneType' object has no attribute 'request_tick'`. The snapshot's
     `_require_driver()` gives a clear error but checks only after
     `create_run` commits, leaving an orphan PENDING run that a later call

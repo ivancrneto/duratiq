@@ -346,22 +346,26 @@ class SqlStore:
         error: Any = None,
         attempt: int = 0,
         session: Session | None = None,
-    ) -> None:
-        def _apply(s: Session) -> None:
+    ) -> bool:
+        """Resolve an outstanding step. Returns ``False`` (and changes nothing) unless
+        the step is still SCHEDULED, so a late or redelivered result can't overwrite a
+        step that already finished, timed out, or was cancelled (lost a select race)."""
+
+        def _apply(s: Session) -> bool:
             step = s.get(WorkflowStep, (run_id, seq))
-            if step is None or step.status == "CANCELLED":
-                return  # a cancelled branch (lost a select race) stays cancelled
+            if step is None or step.status != "SCHEDULED":
+                return False
             step.status = status
             step.result = result
             step.error = error
             step.attempt = attempt
             step.completed_at = utcnow()
+            return True
 
         if session is not None:
-            _apply(session)
-        else:
-            with self.Session.begin() as s:
-                _apply(s)
+            return _apply(session)
+        with self.Session.begin() as s:
+            return _apply(s)
 
     def record_heartbeat(self, run_id: str, seq: int, *, details: Any, timeout_at: datetime | None) -> None:
         """Record an activity's latest progress and push its timeout deadline out.

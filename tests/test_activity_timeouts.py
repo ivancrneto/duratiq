@@ -140,3 +140,59 @@ def test_timeout_emits_events(ns: SimpleNamespace) -> None:
     types = [t for t, _ in seen]
     assert types.count("activity.timed_out") == 2
     assert "activity.failed" in types
+
+
+def _fail_by_timeout(ns: SimpleNamespace, run_id: str) -> None:
+    base = utcnow()
+    for secs in (2, 4, 6):  # two retries, then the budget is spent
+        ns.engine.fire_due_activity_timeouts(now=base + timedelta(seconds=secs))
+    assert _scheduled_step(ns, run_id).status == "FAILED"
+
+
+def test_late_success_does_not_revive_a_timed_out_step(ns: SimpleNamespace) -> None:
+    run_id = ns.engine.start("uses_slow")
+    ns.driver.run_ticks()
+    _fail_by_timeout(ns, run_id)
+    ns.driver.run_ticks()
+    assert ns.store.get_run(run_id).status == "FAILED"
+
+    seen: list[str] = []
+    ns.engine.listener = lambda e: seen.append(e.type)
+    ns.engine.report_activity_result(run_id, 0, "done", None, attempt=0)  # the hung worker finally reports
+
+    step = _scheduled_step(ns, run_id)
+    assert step.status == "FAILED"
+    assert step.error["type"] == "ActivityTimeout"
+    assert step.result is None
+    assert seen == []
+    assert not ns.driver.ticks
+    assert ns.store.get_run(run_id).status == "FAILED"
+
+
+def test_redelivered_failure_does_not_flip_a_completed_step(ns: SimpleNamespace) -> None:
+    run_id = ns.engine.start("uses_slow")
+    ns.driver.run_ticks()
+    ns.engine.report_activity_result(run_id, 0, "done", None, attempt=0)
+    ns.driver.run_ticks()
+    assert ns.store.get_run(run_id).status == "COMPLETED"
+
+    ns.engine.report_activity_result(run_id, 0, None, RuntimeError("redelivered"), attempt=0)
+
+    step = _scheduled_step(ns, run_id)
+    assert step.status == "COMPLETED"
+    assert step.result == {"value": "done"}
+    assert step.error is None
+    assert not ns.driver.ticks
+
+
+def test_late_result_from_an_earlier_attempt_still_resolves_a_retrying_step(ns: SimpleNamespace) -> None:
+    run_id = ns.engine.start("uses_slow")
+    ns.driver.run_ticks()
+    ns.engine.fire_due_activity_timeouts(now=utcnow() + timedelta(seconds=2))  # retry: attempt 1 dispatched
+    assert _scheduled_step(ns, run_id).attempt == 1
+
+    ns.engine.report_activity_result(run_id, 0, "done", None, attempt=0)  # attempt 0 was slow, not lost
+
+    assert _scheduled_step(ns, run_id).status == "COMPLETED"
+    ns.driver.run_ticks()
+    assert ns.store.get_run(run_id).result["value"] == {"r": "done"}

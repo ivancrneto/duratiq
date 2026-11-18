@@ -666,11 +666,13 @@ class Engine:
         self, run_id: str, seq: int, result: Any, error: BaseException | None, *, attempt: int = 0
     ) -> None:
         if error is None:
-            self.store.complete_step(run_id, seq, status="COMPLETED", result={"value": result}, attempt=attempt)
+            if not self.store.complete_step(run_id, seq, status="COMPLETED", result={"value": result}, attempt=attempt):
+                return
             self._emit(events.ACTIVITY_COMPLETED, run_id, seq=seq, attempt=attempt)
         else:
             err = {"type": type(error).__name__, "message": str(error)}
-            self.store.complete_step(run_id, seq, status="FAILED", error=err, attempt=attempt)
+            if not self.store.complete_step(run_id, seq, status="FAILED", error=err, attempt=attempt):
+                return
             self._emit(events.ACTIVITY_FAILED, run_id, seq=seq, attempt=attempt, error=err)
         self._require_driver().request_tick(run_id)
 
