@@ -20,7 +20,7 @@ them outside an activity raises ``RuntimeError``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -57,7 +57,7 @@ def activity_scope(
     *,
     heartbeat_timeout_ms: int | None = None,
     clock: Callable[[], datetime] | None = None,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Install the activity runtime context for the duration of one activity body.
 
     Drivers wrap each activity call in this so :func:`activity_info` / :func:`run_once`

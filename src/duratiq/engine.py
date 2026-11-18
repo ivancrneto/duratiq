@@ -175,7 +175,7 @@ class Engine:
         if search_attributes:
             self.store.upsert_search_attributes(run_id, search_attributes)
         self._emit(events.RUN_STARTED, run_id, name=name)
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
         return run_id
 
     def signal_with_start(
@@ -212,7 +212,7 @@ class Engine:
         # the run reaches its wait — matched FIFO, exactly like a signal that races
         # ahead of its wait normally.
         self.store.add_signal(run_id, signal, payload)
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
         return run_id
 
     def get(self, run_id: str) -> WorkflowRun | None:
@@ -339,7 +339,7 @@ class Engine:
         with self.store.locked_run(run_id) as session:
             self.store.add_update(run_id, update_id, name, {"args": list(args), "kwargs": kwargs}, session=session)
             self.store.match_updates(run_id, session=session)
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
         return update_id
 
     def get_update_result(self, run_id: str, update_id: str) -> Any:
@@ -620,13 +620,13 @@ class Engine:
             # If this run is itself a child and just reached a terminal state, queue a
             # notification so its parent's CHILD_WORKFLOW step resolves and the parent
             # advances (done post-commit, outside this run's lock).
-            if terminal_status is not None and run.parent_run_id is not None:
+            if terminal_status is not None and run.parent_run_id is not None and run.parent_seq is not None:
                 parent_notify = (run.parent_run_id, run.parent_seq, terminal_status, terminal_result, terminal_error)
 
         # Dispatch only after the tick transaction has committed, so we never put a
         # message on the broker for a step that got rolled back.
         for sa in scheduled:
-            self.driver.dispatch_activity(run_id, sa.seq, sa.name, sa.args, sa.kwargs, sa.max_retries)
+            self._require_driver().dispatch_activity(run_id, sa.seq, sa.name, sa.args, sa.kwargs, sa.max_retries)
         # Start child workflows after commit. Idempotent: a re-tick that re-runs this
         # for an already-started child finds the existing run and just re-ticks it.
         for sc in children:
@@ -638,10 +638,10 @@ class Engine:
             self._cancel(child_id, notify_parent=False)
         # A queued signal was consumed during this tick — replay again to advance.
         if matched:
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
         # continue-as-new reset the run to PENDING — kick off the next iteration.
         if restart:
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
         # This run finished and has a parent waiting on it — resolve the parent's step.
         if parent_notify is not None:
             self._notify_parent(*parent_notify)
@@ -672,7 +672,7 @@ class Engine:
             err = {"type": type(error).__name__, "message": str(error)}
             self.store.complete_step(run_id, seq, status="FAILED", error=err, attempt=attempt)
             self._emit(events.ACTIVITY_FAILED, run_id, seq=seq, attempt=attempt, error=err)
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
 
     def _start_child(self, parent_run_id: str, parent_seq: int, name: str, input: dict) -> None:
         """Start (or re-tick) the child run for a parent's CHILD_WORKFLOW step.
@@ -683,7 +683,7 @@ class Engine:
         """
         existing = self.store.find_child_run(parent_run_id, parent_seq)
         if existing is not None:
-            self.driver.request_tick(existing.id)
+            self._require_driver().request_tick(existing.id)
             return
         wf = self.registry.get_workflow(name)  # validate before creating the sub-run
         child_id = uuid4().hex
@@ -695,7 +695,7 @@ class Engine:
             parent_run_id=parent_run_id,
             parent_seq=parent_seq,
         )
-        self.driver.request_tick(child_id)
+        self._require_driver().request_tick(child_id)
 
     def _notify_parent(self, parent_run_id: str, parent_seq: int, status: str, result: Any, error: dict | None) -> None:
         """Resolve a parent's CHILD_WORKFLOW step from a finished child and re-tick it.
@@ -709,7 +709,7 @@ class Engine:
             self.store.complete_step(parent_run_id, parent_seq, status="COMPLETED", result=result)
         else:
             self.store.complete_step(parent_run_id, parent_seq, status="FAILED", error=error)
-        self.driver.request_tick(parent_run_id)
+        self._require_driver().request_tick(parent_run_id)
 
     def fire_due_timers(self, *, now: datetime | None = None, limit: int = 100) -> int:
         """Deliver elapsed ``ctx.sleep`` timers and re-tick the runs they unblock.
@@ -721,7 +721,7 @@ class Engine:
         self._require_driver()
         run_ids = self.store.fire_due_timers(now=now or self.now(), limit=limit)
         for run_id in run_ids:
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
         return len(run_ids)
 
     def fire_due_activity_timeouts(self, *, now: datetime | None = None, limit: int = 100) -> int:
@@ -781,7 +781,7 @@ class Engine:
                     if failed is not None:
                         name, attempt, error = failed
                         self._emit(events.ACTIVITY_FAILED, run_id, name=name, seq=seq, attempt=attempt, error=error)
-                        self.driver.request_tick(run_id)
+                        self._require_driver().request_tick(run_id)
                         return True
 
             activity = self.registry.get_activity(step.name)
@@ -808,12 +808,12 @@ class Engine:
         if redispatch is not None:
             attempt, name, args, kwargs, max_retries = redispatch
             self._emit(events.ACTIVITY_TIMED_OUT, run_id, name=name, seq=seq, attempt=attempt)
-            self.driver.dispatch_activity(run_id, seq, name, args, kwargs, max_retries)
+            self._require_driver().dispatch_activity(run_id, seq, name, args, kwargs, max_retries)
             return True
         if failed is not None:
             name, attempt, error = failed
             self._emit(events.ACTIVITY_FAILED, run_id, name=name, seq=seq, attempt=attempt, error=error)
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
             return True
         return False
 
@@ -847,7 +847,7 @@ class Engine:
                     run_id, seq, status="FAILED", error=error, attempt=step.attempt, session=session
                 )
             self._emit(events.ACTIVITY_FAILED, run_id, name=step.name, seq=seq, attempt=step.attempt, error=error)
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
             handled += 1
         return handled
 
@@ -1016,7 +1016,7 @@ class Engine:
         for run_id in run_ids:
             if redispatch_orphaned_activities:
                 self._redispatch_orphaned_activities(run_id)
-            self.driver.request_tick(run_id)
+            self._require_driver().request_tick(run_id)
         return len(run_ids)
 
     def _redispatch_orphaned_activities(self, run_id: str) -> None:
@@ -1027,7 +1027,7 @@ class Engine:
             except KeyError:
                 continue  # unknown activity (renamed/removed) — nothing we can dispatch
             inp = step.input or {}
-            self.driver.dispatch_activity(
+            self._require_driver().dispatch_activity(
                 run_id, step.seq, step.name, inp.get("args", []), inp.get("kwargs", {}), activity.max_retries
             )
 
@@ -1047,7 +1047,7 @@ class Engine:
             self.store.match_signals(run_id, session=session)
         # Re-tick unconditionally: a matched wait must replay to advance, and an
         # unmatched signal is cheap (the tick is a no-op past the frontier).
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
         return True
 
     # -------------------------------------------------------------- control
@@ -1078,7 +1078,7 @@ class Engine:
                 return False
             run_name = run.name
             self.store.update_run(run_id, session=session, status="CANCELLED")
-            if notify_parent and run.parent_run_id is not None:
+            if notify_parent and run.parent_run_id is not None and run.parent_seq is not None:
                 error = {"type": "ChildWorkflowCancelled", "message": f"child workflow {run.name!r} was cancelled"}
                 parent_notify = (run.parent_run_id, run.parent_seq, "CANCELLED", None, error)
         self._emit(events.RUN_CANCELLED, run_id, name=run_name)
@@ -1133,7 +1133,7 @@ class Engine:
                 return False
             run_name = run.name
             self.store.update_run(run_id, session=session, status="FAILED", error=error)
-            if notify_parent and run.parent_run_id is not None:
+            if notify_parent and run.parent_run_id is not None and run.parent_seq is not None:
                 parent_error = {
                     "type": "ChildWorkflowFailed",
                     "message": f"child workflow {run.name!r} was terminated: {error['message']}",
@@ -1239,5 +1239,5 @@ class Engine:
                 session=session,
             )
         self._emit(events.RUN_STARTED, run_id, name=name)
-        self.driver.request_tick(run_id)
+        self._require_driver().request_tick(run_id)
         return run_id, update_id

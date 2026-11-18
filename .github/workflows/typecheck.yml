@@ -1,0 +1,36 @@
+name: typecheck
+
+# ty against freshly resolved dependencies (the pre-commit hook uses pinned ones).
+# Settings live in [tool.ty] in pyproject.toml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group: # run on merge-queue entries, so required checks report there too
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ty:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,otel,postgres]"
+
+      - name: Run ty
+        run: ty check --python "$(command -v python)" --output-format github

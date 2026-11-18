@@ -33,16 +33,17 @@ class DramatiqDriver:
         if not any(isinstance(m, CurrentMessage) for m in self.broker.middleware):
             self.broker.add_middleware(CurrentMessage())
 
+        # actor(**opts)(fn) is the same as actor(fn, **opts) at runtime, but it is the
+        # overload dramatiq's type hints declare.
         self._tick_actor = dramatiq.actor(
-            self._tick, actor_name="duratiq_tick", queue_name=queue_name, broker=self.broker, max_retries=3
-        )
+            actor_name="duratiq_tick", queue_name=queue_name, broker=self.broker, max_retries=3
+        )(self._tick)
         self._activity_actor = dramatiq.actor(
-            self._run_activity,
             actor_name="duratiq_run_activity",
             queue_name=queue_name,
             broker=self.broker,
             max_retries=0,  # the actor body never re-raises; failures are reported as FAILED steps
-        )
+        )(self._run_activity)
 
     # ---- actor bodies -----------------------------------------------------
     def _tick(self, run_id: str) -> None:

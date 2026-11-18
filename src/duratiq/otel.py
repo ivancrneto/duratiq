@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from opentelemetry.context import Context
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.trace import Tracer
+    from opentelemetry.util.types import AttributeValue
 
     from .engine import Engine
     from .events import Listener
@@ -89,8 +90,8 @@ def run_trace_context(run_id: str) -> Context:
     return _trace.set_span_in_context(NonRecordingSpan(span_context))
 
 
-def _attributes(event: WorkflowEvent) -> dict[str, object]:
-    attrs: dict[str, object] = {"duratiq.run_id": event.run_id, "duratiq.event": event.type}
+def _attributes(event: WorkflowEvent) -> dict[str, AttributeValue]:
+    attrs: dict[str, AttributeValue] = {"duratiq.run_id": event.run_id, "duratiq.event": event.type}
     if event.name is not None:
         key = "duratiq.activity.name" if event.type.startswith("activity.") else "duratiq.workflow.name"
         attrs[key] = event.name

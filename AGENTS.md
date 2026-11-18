@@ -66,6 +66,7 @@ pytest -v                                            # library tests (testpaths 
 pytest tests/test_cron.py                            # a single file
 pytest --cov=duratiq --cov-report=term-missing       # coverage gate (fail_under = 90)
 ruff check . && ruff format --check .                # lint + format (also via pre-commit)
+ty check                                             # type check src/duratiq (also via pre-commit)
 pre-commit run --all-files                           # full pre-commit gate
 python -m build && python -m twine check dist/*      # sdist + wheel check (CI: build.yml)
 

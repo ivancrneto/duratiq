@@ -20,3 +20,25 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # Type checking with ty (settings in [tool.ty] in pyproject.toml). The hook runs in
+  # its own env, so it pins ty (pre-1.0: keep it equal to the `dev` extra) and the
+  # runtime deps whose types src/ uses. The CI `typecheck` job re-checks against
+  # freshly resolved deps, so a stale pin here is caught there.
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: ty check
+        language: python
+        additional_dependencies:
+          - ty==0.0.100
+          - sqlalchemy==2.1.9
+          - alembic==1.20.1
+          - dramatiq==2.2.1
+          - opentelemetry-api==1.45.2
+          - opentelemetry-sdk==1.45.2
+        # Type errors cross module boundaries, so check the whole package.
+        pass_filenames: false
+        files: ^(src/.*\.pyi?|pyproject\.toml)$
+        require_serial: true
